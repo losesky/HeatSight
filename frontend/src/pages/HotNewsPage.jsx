@@ -18,7 +18,7 @@ import HotRankings from '../components/HotRankings';
 import HotNewsModule from '../components/HotNewsModule';
 
 // Update API URL to use the correct HeatLink endpoint
-const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://127.0.0.1:8000/api';
+const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000/api';
 
 const HotNewsPage = () => {
   const { sourceId } = useParams();

@@ -6,7 +6,9 @@ psycopg2-binary>=2.9.5
 asyncpg>=0.27.0
 python-dotenv>=1.0.0
 httpx>=0.24.0
+# Redis相关依赖，提供更好的兼容性
 redis>=4.5.0
+redis[hiredis]>=4.5.0
 aioredis>=2.0.0
 python-jose>=3.3.0
 passlib>=1.7.4

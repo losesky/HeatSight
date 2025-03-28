@@ -265,4 +265,94 @@ async def get_topic_detail(
         raise HTTPException(
             status_code=500,
             detail=f"Error fetching topic: {str(e)}"
-        ) 
+        )
+
+
+@router.post("/cache/clear")
+async def clear_topics_cache(
+    cache_type: Optional[str] = Query(None, description="Type of cache to clear (hot, categories, sources, all)"),
+    force: bool = Query(False, description="Force clear all caches including HeatLink API caches"),
+):
+    """
+    Clear topics caches.
+    
+    Clears Redis caches for topics data. Can clear specific cache types or all caches.
+    """
+    success = True
+    cleared_keys = []
+    error_message = None
+    
+    try:
+        if not redis_manager.is_connected or not redis_manager.redis_client:
+            await redis_manager.connect()
+            
+        if not redis_manager.is_connected:
+            return {
+                "success": False,
+                "message": "Could not connect to Redis"
+            }
+        
+        # Clear specific cache type
+        if cache_type:
+            if cache_type == "hot":
+                # Clear hot topics caches
+                keys = await redis_manager.redis_client.keys("topics:hot:*")
+                cleared_keys.extend(keys)
+                if keys:
+                    await redis_manager.redis_client.delete(*keys)
+                # Clear HeatLink hot news caches if forced
+                if force:
+                    await heatlink_client.clear_cache_by_prefix("hot_news")
+                
+            elif cache_type == "categories":
+                # Clear categories caches
+                keys = await redis_manager.redis_client.keys("categories:*")
+                cleared_keys.extend(keys)
+                if keys:
+                    await redis_manager.redis_client.delete(*keys)
+                
+            elif cache_type == "sources":
+                # Clear sources caches
+                keys = await redis_manager.redis_client.keys("sources:*")
+                cleared_keys.extend(keys)
+                if keys:
+                    await redis_manager.redis_client.delete(*keys)
+                # Clear HeatLink sources caches if forced
+                if force:
+                    await heatlink_client.clear_cache_by_prefix("sources")
+                
+            elif cache_type == "all":
+                # Clear all topic related caches
+                keys = await redis_manager.redis_client.keys("topics:*")
+                keys.extend(await redis_manager.redis_client.keys("categories:*"))
+                keys.extend(await redis_manager.redis_client.keys("sources:*"))
+                cleared_keys.extend(keys)
+                if keys:
+                    await redis_manager.redis_client.delete(*keys)
+                # Clear all HeatLink caches if forced
+                if force:
+                    await heatlink_client.clear_all_caches()
+            else:
+                return {
+                    "success": False,
+                    "message": f"Unknown cache type: {cache_type}"
+                }
+        else:
+            # Default: clear all topic caches
+            keys = await redis_manager.redis_client.keys("topics:*")
+            cleared_keys.extend(keys)
+            if keys:
+                await redis_manager.redis_client.delete(*keys)
+        
+        logger.info(f"Cleared {len(cleared_keys)} cache keys")
+        
+    except Exception as e:
+        success = False
+        error_message = str(e)
+        logger.error(f"Error clearing caches: {e}")
+    
+    return {
+        "success": success,
+        "message": "Cache cleared successfully" if success else f"Error: {error_message}",
+        "cleared_keys_count": len(cleared_keys)
+    } 

@@ -20,6 +20,14 @@ export const useHotTopics = (params = {}, options = {}) => {
     [QUERY_KEYS.HOT_TOPICS, params],
     () => topicsApi.getHotTopics(params),
     {
+      // 热门话题每5分钟刷新一次，与后端Redis缓存保持一致
+      staleTime: 5 * 60 * 1000, // 5分钟
+      // 保留长时间缓存
+      cacheTime: 30 * 60 * 1000, // 30分钟
+      // 使用窗口聚焦时进行后台刷新
+      refetchOnWindowFocus: 'always',
+      // 首次加载时显示骨架屏，后续更新使用上次数据
+      keepPreviousData: true,
       // 使用全局默认值，同时允许被覆盖
       ...options,
     }

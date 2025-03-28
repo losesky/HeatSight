@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     
     # Server settings
-    HOST: str = "0.0.0.0"
+    HOST: str = "localhost"
     PORT: int = 8080
     
     # Database settings

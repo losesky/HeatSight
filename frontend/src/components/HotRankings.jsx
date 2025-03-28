@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   FiExternalLink, 
@@ -12,107 +12,342 @@ import {
 import axios from 'axios';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import { SourceCardSkeleton } from './SkeletonLoader';
 
 // Update API URL to use the correct HeatLink endpoint
-const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://127.0.0.1:8000/api';
+const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000/api';
+
+// 缓存keys
+const CACHE_KEYS = {
+  SOURCES: 'heatsight_sources',
+  SOURCE_DATA: 'heatsight_source_data',
+  CACHE_TIMESTAMP: 'heatsight_cache_timestamp',
+  NEWS_HEAT_DATA: 'heatsight_news_heat_data'
+};
+
+// 缓存过期时间（毫秒）- 10分钟
+const CACHE_EXPIRY = 10 * 60 * 1000;
+
+// 缓存工具函数
+const cacheUtils = {
+  // 保存数据到本地缓存
+  saveToCache: (key, data) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(data));
+      localStorage.setItem(CACHE_KEYS.CACHE_TIMESTAMP, Date.now().toString());
+    } catch (err) {
+      console.error('Error saving to cache:', err);
+    }
+  },
+  
+  // 从本地缓存获取数据
+  getFromCache: (key) => {
+    try {
+      const cachedData = localStorage.getItem(key);
+      const timestamp = localStorage.getItem(CACHE_KEYS.CACHE_TIMESTAMP);
+      
+      // 检查缓存是否过期
+      if (cachedData && timestamp) {
+        const now = Date.now();
+        const cacheTime = parseInt(timestamp, 10);
+        
+        // 如果缓存未过期，返回缓存数据
+        if (now - cacheTime < CACHE_EXPIRY) {
+          return JSON.parse(cachedData);
+        }
+      }
+      return null;
+    } catch (err) {
+      console.error('Error reading from cache:', err);
+      return null;
+    }
+  },
+  
+  // 清除缓存
+  clearCache: () => {
+    try {
+      localStorage.removeItem(CACHE_KEYS.SOURCES);
+      localStorage.removeItem(CACHE_KEYS.SOURCE_DATA);
+      localStorage.removeItem(CACHE_KEYS.CACHE_TIMESTAMP);
+    } catch (err) {
+      console.error('Error clearing cache:', err);
+    }
+  },
+  
+  // 检查缓存是否有效
+  isCacheValid: () => {
+    try {
+      const timestamp = localStorage.getItem(CACHE_KEYS.CACHE_TIMESTAMP);
+      if (!timestamp) return false;
+      
+      const cacheTime = parseInt(timestamp, 10);
+      return (Date.now() - cacheTime) < CACHE_EXPIRY;
+    } catch (err) {
+      return false;
+    }
+  }
+};
 
 const HotRankings = () => {
   const [sources, setSources] = useState([]);
   const [sourceDataMap, setSourceDataMap] = useState({});
   const [loading, setLoading] = useState(false);
+  const [loadingSources, setLoadingSources] = useState(new Set()); // 跟踪正在加载的源
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedCategories, setSelectedCategories] = useState(['all']);
   const [searchTerm, setSearchTerm] = useState('');
+  const [newsHeatMap, setNewsHeatMap] = useState({});
   const displayCount = 5; // Number of news items to display per source
+  
+  // 使用ref跟踪组件是否已挂载，防止初始化后的重复请求
+  const isMounted = useRef(false);
+  // 使用ref标记手动刷新
+  const isManualRefresh = useRef(false);
+  // 存储数据，避免循环依赖
+  const sourcesRef = useRef([]);
 
-  // Define fetchAllSourceData with useCallback to avoid infinite loops
-  const fetchAllSourceData = useCallback(async () => {
-    setLoading(true);
-    const dataMap = {};
-    
-    // Get popular sources first (limit to prevent too many concurrent requests)
-    const popularSources = sources.filter(s => 
-      ['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'].includes(s.source_id)
-    );
-    
-    // Then other sources
-    const otherSources = sources.filter(s => 
-      !['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'].includes(s.source_id)
-    ).slice(0, 15); // Limit to 15 other sources to prevent too many requests
-    
-    const allSourcesToFetch = [...popularSources, ...otherSources];
-    
-    try {
-      // Use Promise.all to fetch data for all sources in parallel
-      await Promise.all(
-        allSourcesToFetch.map(async (source) => {
-          try {
-            // Use the correct API endpoint from the documentation
-            const response = await axios.get(`${API_URL}/external/source/${source.source_id}?limit=${displayCount}`);
-            if (response.data) {
-              dataMap[source.source_id] = response.data;
-            }
-          } catch (err) {
-            console.error(`Error fetching data for source ${source.source_id}:`, err);
-            // Continue with other sources if one fails
-          }
-        })
-      );
-      
-      setSourceDataMap(dataMap);
-    } catch (err) {
-      console.error('Error fetching source data:', err);
-      setError('获取新闻数据失败，请稍后再试');
-    } finally {
-      setLoading(false);
-    }
-  }, [sources, displayCount]);
-
-  // Fetch available sources on component mount
+  // 只使用一个useEffect处理所有数据加载
   useEffect(() => {
-    fetchSources();
-  }, []);
-
-  // Fetch source data for each source
-  useEffect(() => {
-    if (sources.length > 0) {
-      fetchAllSourceData();
+    // 只在组件首次加载或手动刷新时请求数据
+    if (isMounted.current && !isManualRefresh.current) {
+      return;
     }
-  }, [sources, fetchAllSourceData]);
 
-  const fetchSources = async () => {
-    try {
+    // 标记组件已挂载
+    isMounted.current = true;
+    // 重置手动刷新标记
+    isManualRefresh.current = false;
+
+    // 获取所有源列表和数据的主函数
+    const fetchAllData = async () => {
       setLoading(true);
-      // Use the correct API endpoint from the documentation
-      const response = await axios.get(`${API_URL}/external/sources`);
+      setError(null);
       
-      if (response.data && response.data.sources) {
-        // Sort sources by category
-        const sortedSources = response.data.sources.sort((a, b) => {
+      // 如果不是手动刷新，尝试从缓存加载数据
+      if (!isManualRefresh.current && cacheUtils.isCacheValid()) {
+        const cachedSources = cacheUtils.getFromCache(CACHE_KEYS.SOURCES);
+        const cachedSourceData = cacheUtils.getFromCache(CACHE_KEYS.SOURCE_DATA);
+        
+        if (cachedSources && cachedSourceData) {
+          console.log('Loading data from cache');
+          setSources(cachedSources);
+          setSourceDataMap(cachedSourceData);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      try {
+        console.log('Fetching fresh data from API');
+        
+        // 1. 首先获取所有可用的源
+        const sourcesResponse = await axios.get(`${API_URL}/external/sources`);
+        
+        if (!sourcesResponse.data || !sourcesResponse.data.sources) {
+          throw new Error('Failed to fetch sources data');
+        }
+        
+        // 排序源
+        const sortedSources = sourcesResponse.data.sources.sort((a, b) => {
           if (a.category === b.category) {
             return a.name.localeCompare(b.name);
           }
           return a.category.localeCompare(b.category);
         });
         
+        // 更新sources状态和ref
         setSources(sortedSources);
+        sourcesRef.current = sortedSources;
+        
+        // 保存源数据到缓存
+        cacheUtils.saveToCache(CACHE_KEYS.SOURCES, sortedSources);
+        
+        // 筛选和准备要获取的源
+        const popularSources = sortedSources.filter(s => 
+          ['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'].includes(s.source_id)
+        );
+        
+        // 去掉slice限制，获取所有其他来源
+        const otherSources = sortedSources.filter(s => 
+          !['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'].includes(s.source_id)
+        );
+        
+        const allSourcesToFetch = [...popularSources, ...otherSources];
+        
+        // 准备加载所有源的数据
+        setLoadingSources(new Set(allSourcesToFetch.map(s => s.source_id)));
+        
+        // 2. 并行获取所有源的数据
+        const newDataMap = {};
+        await Promise.all(
+          allSourcesToFetch.map(async (source) => {
+            try {
+              const response = await axios.get(`${API_URL}/external/source/${source.source_id}?limit=${displayCount}`);
+              
+              if (response.data) {
+                newDataMap[source.source_id] = response.data;
+                
+                // 实时更新UI，移除已加载的源
+                setSourceDataMap(prev => ({
+                  ...prev,
+                  [source.source_id]: response.data
+                }));
+                
+                setLoadingSources(prevState => {
+                  const newSet = new Set(prevState);
+                  newSet.delete(source.source_id);
+                  return newSet;
+                });
+              }
+            } catch (err) {
+              console.error(`Error fetching data for source ${source.source_id}:`, err);
+              // 移除失败的源
+              setLoadingSources(prevState => {
+                const newSet = new Set(prevState);
+                newSet.delete(source.source_id);
+                return newSet;
+              });
+            }
+          })
+        );
+        
+        // 最终更新所有数据
+        setSourceDataMap(newDataMap);
+        
+        // 保存数据到缓存
+        cacheUtils.saveToCache(CACHE_KEYS.SOURCE_DATA, newDataMap);
+        
+      } catch (err) {
+        console.error('Error fetching data:', err);
+        setError('获取数据失败，请稍后再试');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+        setLoadingSources(new Set());
       }
-    } catch (err) {
-      console.error('Error fetching sources:', err);
-      setError('获取新闻源失败，请稍后再试');
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+    
+    fetchAllData();
+    
+    // 组件卸载时清理
+    return () => {
+      isMounted.current = false;
+    };
+  }, []); // 空依赖数组，只在组件挂载时执行一次
 
-  const handleRefresh = async () => {
+  // 手动刷新函数
+  const handleRefresh = () => {
+    if (loading || refreshing) return;
+    
+    // 先设置刷新状态
     setRefreshing(true);
-    try {
-      await fetchAllSourceData();
-    } finally {
-      setRefreshing(false);
-    }
+    isManualRefresh.current = true;
+    
+    // 清除缓存
+    cacheUtils.clearCache();
+    
+    // 重置挂载状态，触发useEffect
+    isMounted.current = false;
+    
+    // 强制组件重新渲染以触发useEffect
+    // 由于我们使用空依赖数组，React不会自动重新执行useEffect
+    // 添加一个setTimeout以确保状态更新和DOM刷新后再触发useEffect
+    setTimeout(() => {
+      // 获取所有源列表和数据的主函数
+      const fetchAllData = async () => {
+        try {
+          console.log('Manually refreshing data from API');
+          
+          // 1. 首先获取所有可用的源
+          const sourcesResponse = await axios.get(`${API_URL}/external/sources`);
+          
+          if (!sourcesResponse.data || !sourcesResponse.data.sources) {
+            throw new Error('Failed to fetch sources data');
+          }
+          
+          // 排序源
+          const sortedSources = sourcesResponse.data.sources.sort((a, b) => {
+            if (a.category === b.category) {
+              return a.name.localeCompare(b.name);
+            }
+            return a.category.localeCompare(b.category);
+          });
+          
+          // 更新sources状态和ref
+          setSources(sortedSources);
+          sourcesRef.current = sortedSources;
+          
+          // 保存源数据到缓存
+          cacheUtils.saveToCache(CACHE_KEYS.SOURCES, sortedSources);
+          
+          // 筛选和准备要获取的源
+          const popularSources = sortedSources.filter(s => 
+            ['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'].includes(s.source_id)
+          );
+          
+          // 去掉slice限制，获取所有其他来源
+          const otherSources = sortedSources.filter(s => 
+            !['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'].includes(s.source_id)
+          );
+          
+          const allSourcesToFetch = [...popularSources, ...otherSources];
+          
+          // 准备加载所有源的数据
+          setLoadingSources(new Set(allSourcesToFetch.map(s => s.source_id)));
+          
+          // 2. 并行获取所有源的数据
+          const newDataMap = {};
+          await Promise.all(
+            allSourcesToFetch.map(async (source) => {
+              try {
+                const response = await axios.get(`${API_URL}/external/source/${source.source_id}?limit=${displayCount}`);
+                
+                if (response.data) {
+                  newDataMap[source.source_id] = response.data;
+                  
+                  // 实时更新UI，移除已加载的源
+                  setSourceDataMap(prev => ({
+                    ...prev,
+                    [source.source_id]: response.data
+                  }));
+                  
+                  setLoadingSources(prevState => {
+                    const newSet = new Set(prevState);
+                    newSet.delete(source.source_id);
+                    return newSet;
+                  });
+                }
+              } catch (err) {
+                console.error(`Error fetching data for source ${source.source_id}:`, err);
+                // 移除失败的源
+                setLoadingSources(prevState => {
+                  const newSet = new Set(prevState);
+                  newSet.delete(source.source_id);
+                  return newSet;
+                });
+              }
+            })
+          );
+          
+          // 最终更新所有数据
+          setSourceDataMap(newDataMap);
+          
+          // 保存数据到缓存
+          cacheUtils.saveToCache(CACHE_KEYS.SOURCE_DATA, newDataMap);
+          
+        } catch (err) {
+          console.error('Error fetching data:', err);
+          setError('获取数据失败，请稍后再试');
+        } finally {
+          setLoading(false);
+          setRefreshing(false);
+          setLoadingSources(new Set());
+        }
+      };
+      
+      fetchAllData();
+    }, 0);
   };
 
   const toggleCategory = (category) => {
@@ -212,6 +447,184 @@ const HotRankings = () => {
     };
   };
 
+  // 检查源是否正在加载中
+  const isSourceLoading = (sourceId) => {
+    return loadingSources.has(sourceId);
+  };
+
+  // 新增：计算所有新闻线索的热度分数（在所有新闻源中出现的频率）
+  const calculateNewsHeat = useMemo(() => {
+    if (Object.keys(sourceDataMap).length === 0) {
+      return {};
+    }
+
+    console.log('计算热度分数...');
+    
+    // 1. 收集所有新闻
+    const allNews = [];
+    Object.values(sourceDataMap).forEach(sourceData => {
+      if (sourceData.news && Array.isArray(sourceData.news)) {
+        allNews.push(...sourceData.news);
+      }
+    });
+    
+    // 2. 对标题进行分词和处理（简单实现，仅示例）
+    const processTitle = (title) => {
+      return title
+        .toLowerCase()
+        .replace(/[^\w\s\u4e00-\u9fff]/g, '') // 保留中文字符和英文字母数字
+        .trim();
+    };
+    
+    // 3. 创建标题关键词映射
+    const titleKeywords = {};
+    allNews.forEach(news => {
+      if (news.title) {
+        const processedTitle = processTitle(news.title);
+        if (!titleKeywords[processedTitle]) {
+          titleKeywords[processedTitle] = {
+            newsId: news.id,
+            count: 1, // 出现次数
+            sources: new Set([news.source_id]), // 在哪些源中出现
+          };
+        } else {
+          titleKeywords[processedTitle].count += 1;
+          titleKeywords[processedTitle].sources.add(news.source_id);
+        }
+      }
+    });
+    
+    // 4. 计算相似性和聚类（简化版，仅用于演示）
+    // 在实际应用中，这里可以使用更复杂的算法，如余弦相似度、Jaccard相似系数等
+    const similarity = (title1, title2) => {
+      // 简单判断：如果两个标题有80%以上的相似，视为相同新闻
+      const longer = title1.length >= title2.length ? title1 : title2;
+      const shorter = title1.length >= title2.length ? title2 : title1;
+      
+      if (shorter.length === 0) return 0;
+      
+      // 检查一个字符串是否是另一个字符串的子串
+      if (longer.includes(shorter)) return 1;
+      
+      // 简单计算部分匹配
+      let matches = 0;
+      const words1 = longer.split(/\s+/);
+      const words2 = shorter.split(/\s+/);
+      
+      words2.forEach(word => {
+        if (words1.includes(word)) matches++;
+      });
+      
+      return matches / words2.length;
+    };
+    
+    // 5. 合并相似新闻
+    const processedTitles = Object.keys(titleKeywords);
+    const clusters = [];
+    
+    processedTitles.forEach(title => {
+      const item = titleKeywords[title];
+      
+      // 查找是否已有相似的标题簇
+      let foundCluster = false;
+      for (const cluster of clusters) {
+        if (similarity(cluster.title, title) > 0.8) {
+          // 合并到现有簇
+          cluster.count += item.count;
+          item.sources.forEach(source => cluster.sources.add(source));
+          cluster.newsIds.push(item.newsId);
+          foundCluster = true;
+          break;
+        }
+      }
+      
+      if (!foundCluster) {
+        // 创建新簇
+        clusters.push({
+          title: title,
+          count: item.count,
+          sources: item.sources,
+          newsIds: [item.newsId],
+        });
+      }
+    });
+    
+    // 6. 计算最终热度分数
+    const heatScores = {};
+    const maxPossibleSources = sources.length; // 理论上最多可以出现在所有源中
+    
+    clusters.forEach(cluster => {
+      const sourceCount = cluster.sources.size;
+      const repeatCount = cluster.count;
+      
+      // 热度计算：(出现源数 / 总源数) * 70 + (重复次数 / 总源数) * 30
+      // 结果是0-100的分数，但我们设置最小为10，给结果加上一些随机性
+      let score = Math.floor((sourceCount / maxPossibleSources) * 70 + 
+                   (repeatCount / maxPossibleSources) * 30);
+      
+      // 确保分数在10-100之间
+      score = Math.max(10, Math.min(100, score));
+      
+      // 为所有相关的新闻ID设置相同的热度分数
+      cluster.newsIds.forEach(newsId => {
+        heatScores[newsId] = score;
+      });
+    });
+    
+    console.log(`计算了 ${Object.keys(heatScores).length} 个新闻热度分数`);
+    
+    // 保存到缓存
+    try {
+      localStorage.setItem(CACHE_KEYS.NEWS_HEAT_DATA, JSON.stringify(heatScores));
+    } catch (err) {
+      console.error('Error saving heat scores to cache:', err);
+    }
+    
+    return heatScores;
+  }, [sourceDataMap, sources.length]);
+  
+  // 更新热度分数
+  useEffect(() => {
+    if (Object.keys(sourceDataMap).length > 0) {
+      // 尝试从缓存加载热度数据
+      try {
+        const cachedHeatMap = localStorage.getItem(CACHE_KEYS.NEWS_HEAT_DATA);
+        if (cachedHeatMap && !isManualRefresh.current) {
+          setNewsHeatMap(JSON.parse(cachedHeatMap));
+        } else {
+          // 如果没有缓存或手动刷新，计算新的热度分数
+          setNewsHeatMap(calculateNewsHeat);
+        }
+      } catch (err) {
+        console.error('Error loading heat scores from cache:', err);
+        setNewsHeatMap(calculateNewsHeat);
+      }
+    }
+  }, [calculateNewsHeat, sourceDataMap]);
+
+  // 获取新闻热度分数
+  const getNewsHeatScore = (newsId, defaultScore = 10) => {
+    return newsHeatMap[newsId] || defaultScore;
+  };
+
+  // 获取热度等级文字描述
+  const getHeatLevelText = (score) => {
+    if (score >= 90) return '爆热';
+    if (score >= 70) return '高热';
+    if (score >= 50) return '热门';
+    if (score >= 30) return '一般';
+    return '冷门';
+  };
+
+  // 获取热度颜色类
+  const getHeatColorClass = (score) => {
+    if (score >= 90) return 'text-red-600';
+    if (score >= 70) return 'text-orange-500';
+    if (score >= 50) return 'text-yellow-500';
+    if (score >= 30) return 'text-blue-500';
+    return 'text-gray-500';
+  };
+
   return (
     <div className="space-y-6">
       {/* Filters & Search Bar */}
@@ -256,8 +669,8 @@ const HotRankings = () => {
             
             <button
               onClick={handleRefresh}
-              disabled={refreshing}
-              className={`px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white flex items-center text-sm ${refreshing ? 'opacity-50' : ''}`}
+              disabled={refreshing || loading}
+              className={`px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white flex items-center text-sm ${(refreshing || loading) ? 'opacity-50' : ''}`}
             >
               <FiRefreshCw className={`mr-1.5 ${refreshing ? 'animate-spin' : ''}`} />
               刷新
@@ -267,11 +680,11 @@ const HotRankings = () => {
       </div>
       
       {/* Source Cards Grid */}
-      {loading && !refreshing ? (
+      {loading && sources.length === 0 ? (
         <div className="flex justify-center items-center py-16">
           <div className="animate-spin rounded-full h-16 w-16 border-4 border-gray-200 border-t-blue-600"></div>
         </div>
-      ) : error ? (
+      ) : error && sources.length === 0 ? (
         <div className="bg-red-50 text-red-600 p-8 rounded-lg text-center shadow-sm">
           <div className="text-xl font-bold mb-2">数据获取失败</div>
           <p>{error}</p>
@@ -290,6 +703,13 @@ const HotRankings = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredSources.map(source => {
+            // 判断源是否正在加载
+            if (isSourceLoading(source.source_id)) {
+              return (
+                <SourceCardSkeleton key={`skeleton-${source.source_id}`} />
+              );
+            }
+            
             const sourceData = sourceDataMap[source.source_id];
             if (!sourceData || !sourceData.news || sourceData.news.length === 0) {
               return null; // Skip sources with no data
@@ -320,19 +740,11 @@ const HotRankings = () => {
                 
                 <div className="divide-y divide-gray-100">
                   {sourceData.news.slice(0, displayCount).map((item, index) => (
-                    <div key={item.id} className="p-3 hover:bg-gray-50 transition-colors">
-                      <div className="flex items-start">
-                        <div className="flex-shrink-0 mr-3">
-                          <div className={`flex items-center justify-center h-5 w-5 rounded-full ${
-                            index === 0 ? 'bg-red-500' : 
-                            index === 1 ? 'bg-orange-500' : 
-                            index === 2 ? 'bg-yellow-500' : 
-                            'bg-gray-400'
-                          } text-white text-xs font-bold`}>
-                            {index + 1}
-                          </div>
+                    <div key={item.id} className="p-3 hover:bg-gray-50">
+                      <div className="flex">
+                        <div className="flex-shrink-0 h-5 w-5 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center text-xs font-medium mr-2 mt-0.5">
+                          {index + 1}
                         </div>
-                        
                         <div className="flex-1">
                           <h4 className="font-medium text-gray-900 text-sm mb-1 line-clamp-2">
                             <a 
@@ -363,9 +775,9 @@ const HotRankings = () => {
                               </span>
                             )}
                             
-                            <span className="flex items-center">
-                              <FiStar className="mr-1 text-yellow-500" />
-                              热度 {Math.floor(Math.random() * 90) + 10}
+                            <span className={`flex items-center ${getHeatColorClass(getNewsHeatScore(item.id))}`}>
+                              <FiStar className="mr-1" />
+                              热度 {getNewsHeatScore(item.id)} ({getHeatLevelText(getNewsHeatScore(item.id))})
                             </span>
                           </div>
                         </div>
@@ -400,4 +812,4 @@ const HotRankings = () => {
   );
 };
 
-export default HotRankings; 
+export default HotRankings;
