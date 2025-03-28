@@ -11,6 +11,8 @@ from loguru import logger
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.scheduler import scheduler
+from app.core.tasks import register_tasks
 from app.db.redis import redis_manager
 
 # Get the static directory path
@@ -60,6 +62,10 @@ def create_app() -> FastAPI:
     
     # Include API router
     app.include_router(api_router, prefix="/api")
+    
+    # Setup task scheduler
+    scheduler.setup(app)
+    register_tasks()
     
     # Mount static files
     if os.path.exists(STATIC_DIR):

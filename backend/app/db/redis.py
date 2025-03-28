@@ -10,11 +10,17 @@ logging.basicConfig(
 logger = logging.getLogger("redis_manager")
 
 try:
-    import redis
+    import aioredis
     REDIS_AVAILABLE = True
 except ImportError:
-    logger.warning("Redis库不可用，使用内存缓存作为备选")
-    REDIS_AVAILABLE = False
+    try:
+        from redis.asyncio import Redis
+        REDIS_AVAILABLE = True
+        # 兼容旧版代码，redis v4.2.0+也支持异步API
+        aioredis = Redis
+    except ImportError:
+        logger.warning("Redis异步库不可用，使用内存缓存作为备选")
+        REDIS_AVAILABLE = False
 
 # 简单的内存缓存实现，作为Redis不可用时的备选
 class MemoryCache:
@@ -43,12 +49,15 @@ class MemoryCache:
     async def setex(self, key, ex, value):
         return await self.set(key, value, ex)
         
-    async def delete(self, key):
-        if key in self._cache:
-            del self._cache[key]
-            if key in self._expires:
-                del self._expires[key]
-        return True
+    async def delete(self, *keys):
+        count = 0
+        for key in keys:
+            if key in self._cache:
+                del self._cache[key]
+                if key in self._expires:
+                    del self._expires[key]
+                count += 1
+        return count
     
     async def exists(self, key):
         return key in self._cache
@@ -84,18 +93,17 @@ class RedisManager:
             return
 
         try:
-            # 尝试创建同步Redis客户端
-            self.redis_client = redis.Redis.from_url(
+            # 使用异步Redis客户端
+            self.redis_client = aioredis.from_url(
                 self.redis_url,
                 encoding="utf-8",
                 decode_responses=True
             )
             
-            # 包装同步Redis方法为异步方法
-            self._wrap_async_methods()
-            
             # 测试连接
-            await self.redis_client.ping()
+            if hasattr(self.redis_client, "ping"):
+                await self.redis_client.ping()
+            
             self.is_connected = True
             logger.info("已连接到Redis")
         except Exception as e:
@@ -105,47 +113,11 @@ class RedisManager:
             self.is_connected = True
             self.using_memory_cache = True
 
-    def _wrap_async_methods(self):
-        """将同步Redis方法包装为异步方法"""
-        if hasattr(self.redis_client, "ping") and not hasattr(self.redis_client, "ping.__await__"):
-            # 定义异步包装器
-            async def _async_wrapper(method, *args, **kwargs):
-                return method(*args, **kwargs)
-
-            # 包装常用方法
-            original_ping = self.redis_client.ping
-            original_get = self.redis_client.get
-            original_set = self.redis_client.set
-            original_setex = self.redis_client.setex
-            original_delete = self.redis_client.delete
-            original_exists = self.redis_client.exists
-            original_keys = self.redis_client.keys
-            original_dbsize = self.redis_client.dbsize
-            
-            # 替换为异步版本
-            self.redis_client.ping = lambda: _async_wrapper(original_ping)
-            self.redis_client.get = lambda key: _async_wrapper(original_get, key)
-            self.redis_client.set = lambda key, value, ex=None: _async_wrapper(original_set, key, value, ex=ex)
-            self.redis_client.setex = lambda key, ex, value: _async_wrapper(original_setex, key, ex, value)
-            self.redis_client.delete = lambda key: _async_wrapper(original_delete, key)
-            self.redis_client.exists = lambda key: _async_wrapper(original_exists, key)
-            self.redis_client.keys = lambda pattern: _async_wrapper(original_keys, pattern)
-            self.redis_client.dbsize = lambda: _async_wrapper(original_dbsize)
-            
-            # 处理关闭方法
-            if hasattr(self.redis_client, "close"):
-                original_close = self.redis_client.close
-                self.redis_client.close = lambda: _async_wrapper(original_close)
-            else:
-                # 如果没有关闭方法，提供一个空的
-                async def noop():
-                    pass
-                self.redis_client.close = noop
-
     async def disconnect(self) -> None:
         """Disconnect from Redis."""
         if self.redis_client:
-            await self.redis_client.close()
+            if hasattr(self.redis_client, "close"):
+                await self.redis_client.close()
             self.is_connected = False
             logger.info("已断开Redis连接")
 
@@ -193,15 +165,16 @@ class RedisManager:
             logger.error(f"Redis设置错误: {e}")
             return False
 
-    async def delete(self, key: str) -> bool:
-        """Delete a key from Redis."""
+    async def delete(self, *keys) -> bool:
+        """Delete keys from Redis."""
         if not self.is_connected or not self.redis_client:
             await self.connect()
             if not self.is_connected:
                 return False
 
         try:
-            await self.redis_client.delete(key)
+            if keys:
+                await self.redis_client.delete(*keys)
             return True
         except Exception as e:
             logger.error(f"Redis删除错误: {e}")

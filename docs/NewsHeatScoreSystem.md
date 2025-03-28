@@ -60,7 +60,242 @@ NewsHeatScore 基于以下关键维度进行热度综合评估：
 
 ## 技术实现
 
-### 后端实现
+### 系统架构
+
+NewsHeatScore 系统采用分层架构设计：
+
+1. **数据获取层**：从 HeatLink API 获取基础新闻数据
+2. **数据处理层**：进行关键词提取、相似度检索和热度计算
+3. **数据存储层**：将计算结果持久化到数据库
+4. **API服务层**：为前端提供热度数据接口
+5. **定时任务层**：定期更新热度数据确保时效性
+
+```
+                   +------------------+
+                   |   前端展示层     |
+                   +--------+---------+
+                            |
+                            v
++----------+       +------------------+
+| HeatLink |<----->|   API服务层     |
+|   API    |       +--------+---------+
++----------+                |
+                            v
+                   +------------------+       +------------------+
+                   |   数据处理层     |<----->|   数据存储层     |
+                   +--------+---------+       +------------------+
+                            |
+                            v
+                   +------------------+
+                   |   定时任务层     |
+                   +------------------+
+```
+
+### 数据获取流程
+
+由于 HeatLink API 的 `/external/hot` 和 `/unified-news` 是伪接口，不会返回实际数据，因此需要通过以下流程获取和处理数据：
+
+1. **新闻源列表获取**：
+```python
+# 获取所有新闻源列表
+sources_data = await heatlink_client.get_sources(force_update=True)
+sources = sources_data["sources"]
+```
+
+2. **并行获取每个新闻源的新闻**：
+```python
+# 限制并发请求数量
+max_concurrent = 5
+all_news_items = []
+
+# 分批处理源，避免过多并发请求
+for i in range(0, len(sources), max_concurrent):
+    batch_sources = sources[i:i+max_concurrent]
+    tasks = []
+    
+    for source in batch_sources:
+        source_id = source["source_id"]
+        task = asyncio.create_task(
+            heatlink_client.get(f"external/test-source/{source_id}")
+        )
+        tasks.append((source_id, task))
+    
+    # 等待这一批任务完成
+    for source_id, task in tasks:
+        source_data = await task
+        if source_data and "items" in source_data:
+            all_news_items.extend(source_data["items"])
+```
+
+3. **关键词提取与相似度检索**：
+```python
+# 为每个新闻项提取关键词
+for news_item in all_news_items:
+    # 提取关键词
+    keywords = _extract_keywords(news_item["title"], news_item.get("content", ""))
+    
+    # 使用关键词进行相似新闻搜索
+    similar_count = 0
+    for keyword in keywords:
+        search_response = await heatlink_client.get(
+            "news", params={"search": keyword["word"]}
+        )
+        if search_response and "items" in search_response:
+            similar_count += len(search_response["items"])
+    
+    # 计算关键词匹配度得分
+    keyword_score = min(similar_count / BASELINE_FACTOR * 100, 100)
+    
+    # 存储关键词和得分信息
+    news_item["extracted_keywords"] = keywords
+    news_item["keyword_score"] = keyword_score
+```
+
+4. **多维度热度计算**：
+```python
+# 计算每个新闻项的热度分数
+for news_item in all_news_items:
+    # 已有关键词匹配度得分
+    keyword_score = news_item["keyword_score"]
+    
+    # 计算时效性得分
+    published_time = datetime.fromisoformat(news_item["published_at"].replace('Z', '+00:00'))
+    hours_passed = (datetime.now(timezone.utc) - published_time).total_seconds() / 3600
+    recency_score = 100 * math.exp(-hours_passed / DECAY_FACTOR)
+    
+    # 计算原平台热度得分（如果有原始热度指标）
+    platform_score = 0
+    if "metrics" in news_item:
+        platform_score = _normalize_platform_score(
+            news_item["metrics"], news_item["source_id"]
+        )
+    
+    # 计算跨源频率得分
+    cross_source_score = _calculate_cross_source_score(
+        news_item["title"], all_news_items
+    )
+    
+    # 获取来源权重
+    source_weight = await _get_source_weight(news_item["source_id"], session)
+    
+    # 综合计算最终热度
+    final_score = (
+        (W_KEYWORD * keyword_score) +
+        (W_RECENCY * recency_score) +
+        (W_PLATFORM * platform_score) +
+        (W_CROSS_SOURCE * cross_source_score) +
+        (W_SOURCE * source_weight)
+    )
+    
+    # 归一化到0-100
+    final_score = min(max(final_score, 0), 100)
+    
+    # 存储计算结果到数据库
+    heat_score = NewsHeatScore(
+        id=str(uuid.uuid4()),
+        news_id=news_item["id"],
+        source_id=news_item["source_id"],
+        title=news_item["title"],
+        url=news_item["url"],
+        heat_score=final_score,
+        relevance_score=keyword_score,
+        recency_score=recency_score,
+        popularity_score=platform_score,
+        meta_data={
+            "cross_source_score": cross_source_score,
+            "source_weight": source_weight
+        },
+        keywords=news_item["extracted_keywords"],
+        calculated_at=datetime.now(timezone.utc),
+        published_at=published_time,
+        updated_at=datetime.now(timezone.utc)
+    )
+    session.add(heat_score)
+
+# 提交数据库事务
+await session.commit()
+```
+
+### 关键词提取实现
+
+```python
+def _extract_keywords(title: str, content: str = "") -> List[Dict[str, Any]]:
+    """使用中文分词技术提取新闻关键词"""
+    # 合并标题和内容
+    text = f"{title} {content}"
+    
+    # 使用jieba进行分词
+    import jieba
+    import jieba.analyse
+    
+    # 提取关键词（返回带权重的关键词）
+    keywords = jieba.analyse.textrank(text, topK=5, withWeight=True)
+    
+    # 转换为所需的数据结构
+    result = []
+    for word, weight in keywords:
+        result.append({"word": word, "weight": float(weight)})
+    
+    return result
+```
+
+### 相似度检索实现
+
+```python
+def _calculate_title_similarity(title1: str, title2: str) -> float:
+    """计算两个标题的相似度"""
+    # 分词
+    import jieba
+    words1 = set(jieba.cut(title1))
+    words2 = set(jieba.cut(title2))
+    
+    # 计算Jaccard相似度
+    intersection = len(words1.intersection(words2))
+    union = len(words1.union(words2))
+    
+    if union == 0:
+        return 0
+    
+    return intersection / union
+
+def _find_similar_news(title: str, news_items: List[Dict]) -> int:
+    """查找与指定标题相似的新闻数量"""
+    similar_count = 0
+    threshold = 0.6  # 相似度阈值
+    
+    for item in news_items:
+        if item["title"] != title:  # 排除自身
+            similarity = _calculate_title_similarity(title, item["title"])
+            if similarity > threshold:
+                similar_count += 1
+    
+    return similar_count
+```
+
+### 定时任务实现
+
+```python
+async def update_hot_news(self):
+    """更新热门新闻热度评分"""
+    logger.info("Running scheduled task: update_hot_news")
+    try:
+        async with SessionLocal() as session:
+            # 1. 获取所有新闻源
+            sources_data = await heatlink_client.get_sources(force_update=True)
+            sources = sources_data.get("sources", [])
+            
+            # 2. 并行获取每个新闻源的最新新闻
+            all_news_items = await self._fetch_all_news_from_sources(sources)
+            
+            # 3. 批量计算热度评分
+            await heat_score_service.calculate_batch_heat_scores(all_news_items, session)
+            
+        logger.info(f"Hot news heat scores updated successfully for {len(all_news_items)} items")
+    except Exception as e:
+        logger.error(f"Error updating hot news heat scores: {e}")
+```
+
+### 后端API实现
 
 - **API封装**：封装对`/api/news/`接口的调用，实现批量关键词检索
 - **缓存机制**：使用Redis实现热度计算结果缓存，减少重复计算
@@ -77,6 +312,100 @@ NewsHeatScore 基于以下关键维度进行热度综合评估：
 - **排序功能**：支持按热度分数排序新闻列表
 - **热度标记**：在信息流中突出显示高热度内容，如热度标签和特殊背景
 - **类别筛选**：支持用户根据兴趣和热度组合筛选内容
+
+## 前端数据获取流程
+
+热门聚合页面的数据获取流程如下：
+
+1. **初始化阶段**：
+```javascript
+// 在HotRankings组件中
+useEffect(() => {
+  // 获取所有源列表和数据的主函数
+  const fetchAllData = async () => {
+    // 尝试从缓存加载数据
+    if (cacheUtils.isCacheValid()) {
+      const cachedSources = cacheUtils.getFromCache(CACHE_KEYS.SOURCES);
+      const cachedSourceData = cacheUtils.getFromCache(CACHE_KEYS.SOURCE_DATA);
+      if (cachedSources && cachedSourceData) {
+        setSources(cachedSources);
+        setSourceDataMap(cachedSourceData);
+        return;
+      }
+    }
+    
+    // 从API获取新数据
+    const sourcesResponse = await axios.get(`${API_URL}/external/sources`);
+    const sortedSources = sourcesResponse.data.sources;
+    
+    // 并行获取所有源的数据
+    const newDataMap = {};
+    await Promise.all(
+      sortedSources.map(async (source) => {
+        const response = await axios.get(`${API_URL}/external/source/${source.source_id}`);
+        if (response.data) {
+          newDataMap[source.source_id] = response.data;
+        }
+      })
+    );
+    
+    // 更新状态和缓存
+    setSources(sortedSources);
+    setSourceDataMap(newDataMap);
+    cacheUtils.saveToCache(CACHE_KEYS.SOURCES, sortedSources);
+    cacheUtils.saveToCache(CACHE_KEYS.SOURCE_DATA, newDataMap);
+  };
+  
+  fetchAllData();
+}, []);
+```
+
+2. **热度数据获取**：
+```javascript
+// 获取新闻热度数据
+const fetchHeatScores = async (newsIds) => {
+  try {
+    // 调用HeatSight API获取热度评分
+    const response = await newsHeatApi.getHeatScores(newsIds);
+    if (response && response.heat_scores) {
+      setNewsHeatMap(response.heat_scores);
+    }
+  } catch (error) {
+    console.error("Error fetching heat scores:", error);
+  }
+};
+```
+
+3. **数据渲染与过滤**：
+```javascript
+// 过滤和排序新闻
+const getDisplayedNews = () => {
+  // 根据选中的分类过滤新闻源
+  const filteredSources = sources.filter(source => 
+    selectedCategories.includes('all') || selectedCategories.includes(source.category)
+  );
+  
+  // 获取所有过滤后的新闻
+  let allNews = [];
+  filteredSources.forEach(source => {
+    const sourceData = sourceDataMap[source.source_id];
+    if (sourceData && sourceData.news) {
+      allNews = [...allNews, ...sourceData.news.map(item => ({
+        ...item,
+        source_name: source.name,
+        category: source.category
+      }))];
+    }
+  });
+  
+  // 根据热度排序
+  return allNews.sort((a, b) => {
+    const aHeat = getNewsHeatScore(a.id);
+    const bHeat = getNewsHeatScore(b.id);
+    return bHeat - aHeat;
+  });
+};
+```
 
 ## 全网热点聚合
 
@@ -184,6 +513,22 @@ NewsHeatScore 系统通过客观、多维度的热度评估，解决了以下问
 6. 降低用户获取热点资讯的时间成本，提供"一站式"热点获取体验
 7. 减少算法偏见，通过多源数据交叉验证确保热点评估的客观性
 
+## 开发注意事项
+
+1. **HeatLink API 接口使用说明**：
+   - `/external/hot` 和 `/unified-news` 是伪接口，不会返回实际数据
+   - 必须通过 `/external/sources` 获取所有新闻源列表
+   - 然后通过 `/external/source/{source_id}` 获取每个源的具体新闻
+   - 使用 `/api/news/` 接口进行关键词搜索确定相似新闻
+
+2. **热度计算数据流**：
+   - 基础数据获取 → 关键词提取 → 相似度检索 → 多维度评分 → 综合计算 → 数据持久化
+
+3. **定时任务配置**：
+   - 关键词热度更新：每60分钟
+   - 来源权重更新：每天一次
+   - 热门新闻热度更新：每30分钟
+
 ---
 
-*本文档描述了 HeatSight 平台的 NewsHeatScore 系统设计方案，实际实现可能根据技术环境和业务需求进行调整。* 
+*本文档描述了 HeatSight 平台的 NewsHeatScore 系统设计方案和实现细节，开发人员应严格遵循上述数据处理流程和算法实现。* 

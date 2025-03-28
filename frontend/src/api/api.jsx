@@ -147,6 +147,57 @@ export const contentApi = {
   }
 };
 
+// 热度评分API
+export const newsHeatApi = {
+  // 获取多个新闻的热度分数
+  getHeatScores: async (newsIds) => {
+    try {
+      const response = await api.get('/heat-score/scores', {
+        params: { news_ids: newsIds }
+      });
+      return response;
+    } catch (error) {
+      console.error('获取热度分数失败:', error);
+      throw new Error('获取热度分数失败');
+    }
+  },
+  
+  // 获取多个新闻的详细热度数据
+  getDetailedHeatScores: async (newsIds) => {
+    try {
+      const response = await api.get('/heat-score/detailed-scores', {
+        params: { news_ids: newsIds }
+      });
+      return response;
+    } catch (error) {
+      console.error('获取详细热度数据失败:', error);
+      throw new Error('获取详细热度数据失败');
+    }
+  },
+  
+  // 获取热门新闻列表
+  getTopNews: async (params = {}) => {
+    try {
+      const response = await api.get('/heat-score/top', { params });
+      return response;
+    } catch (error) {
+      console.error('获取热门新闻失败:', error);
+      throw new Error('获取热门新闻失败');
+    }
+  },
+  
+  // 触发热度更新任务
+  triggerHeatUpdate: async () => {
+    try {
+      const response = await api.post('/heat-score/update');
+      return response;
+    } catch (error) {
+      console.error('触发热度更新失败:', error);
+      throw new Error('触发热度更新失败');
+    }
+  }
+};
+
 // 为了兼容旧代码，提供与utils/api.js相同的导出函数
 export const fetchHotTopics = topicsApi.getHotTopics;
 export const fetchCategories = topicsApi.getCategories;
@@ -165,6 +216,7 @@ export const apiConfig = {
 const apiObject = {
   topics: topicsApi,
   content: contentApi,
+  newsHeat: newsHeatApi,
   config: apiConfig
 };
 

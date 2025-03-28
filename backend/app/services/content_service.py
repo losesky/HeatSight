@@ -3,7 +3,8 @@ Service for handling content generation and related operations.
 """
 
 from typing import Dict, List, Optional, Any, Tuple
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from loguru import logger
 
 from app.models.topic import Topic, ContentSuggestion
@@ -14,7 +15,7 @@ class ContentService:
     """Service for content generation and related operations."""
     
     @staticmethod
-    def get_content_suggestions_by_category(db: Session, category: str) -> Dict[str, List[str]]:
+    async def get_content_suggestions_by_category(db: AsyncSession, category: str) -> Dict[str, List[str]]:
         """
         Get content suggestions for a specific category grouped by type.
         
@@ -25,12 +26,13 @@ class ContentService:
         Returns:
             Dictionary of suggestion types and their corresponding content lists
         """
-        suggestions = (
-            db.query(ContentSuggestion)
-            .filter(ContentSuggestion.category == category)
+        stmt = (
+            select(ContentSuggestion)
+            .where(ContentSuggestion.category == category)
             .order_by(ContentSuggestion.suggestion_type, ContentSuggestion.position)
-            .all()
         )
+        result = await db.execute(stmt)
+        suggestions = list(result.scalars().all())
         
         result = {
             "title_templates": [],
@@ -52,7 +54,7 @@ class ContentService:
         return result
     
     @staticmethod
-    def generate_content_for_topic(db: Session, topic_id: int) -> GeneratedContent:
+    async def generate_content_for_topic(db: AsyncSession, topic_id: int) -> GeneratedContent:
         """
         Generate content suggestions for a specific topic.
         
@@ -64,17 +66,20 @@ class ContentService:
             Generated content including title suggestions, outline, key points, and introduction
         """
         # Get the topic
-        topic = db.query(Topic).filter(Topic.id == topic_id).first()
+        stmt = select(Topic).where(Topic.id == topic_id)
+        result = await db.execute(stmt)
+        topic = result.scalar_one_or_none()
+        
         if not topic:
             raise ValueError(f"Topic with ID {topic_id} not found")
             
         # Get suggestions for the topic's category
         category = topic.category or "default"
-        suggestions = ContentService.get_content_suggestions_by_category(db, category)
+        suggestions = await ContentService.get_content_suggestions_by_category(db, category)
         
         # Use default suggestions if no category-specific ones exist
         if not suggestions["title_templates"]:
-            default_suggestions = ContentService.get_content_suggestions_by_category(db, "default")
+            default_suggestions = await ContentService.get_content_suggestions_by_category(db, "default")
             for key, value in default_suggestions.items():
                 if not suggestions[key]:
                     suggestions[key] = value
@@ -110,7 +115,7 @@ class ContentService:
         )
         
     @staticmethod
-    def generate_subtopics(topic_title: str, category: Optional[str] = None) -> List[str]:
+    async def generate_subtopics(topic_title: str, category: Optional[str] = None) -> List[str]:
         """
         Generate subtopics based on a main topic title and category.
         
@@ -158,4 +163,7 @@ class ContentService:
         if category and category in category_subtopics:
             return category_subtopics[category]
         
-        return default_subtopics 
+        return default_subtopics
+
+# Create a singleton instance of the ContentService
+content_service = ContentService() 

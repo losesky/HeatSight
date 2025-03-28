@@ -59,11 +59,21 @@ class HeatLinkAPIClient:
         Returns:
             API response data
         """
+        # 构建URL，处理可能的'/api/api/'重复问题
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        
+        # 检测并修复潜在的URL路径重复问题
+        if '/api/api/' in url:
+            # 去除重复的'/api/'
+            url = url.replace('/api/api/', '/api/')
+            logger.warning(f"Detected and fixed duplicated API path in URL: {url}")
+        
         logger.debug(f"Making {method} request to {url}")
         
         try:
-            async with httpx.AsyncClient(**self.client_params) as client:
+            # 创建client时启用follow_redirects以自动处理重定向
+            client_params = {**self.client_params, "follow_redirects": True}
+            async with httpx.AsyncClient(**client_params) as client:
                 # 针对不同的HTTP方法使用不同的参数
                 if method.upper() == "GET":
                     response = await client.get(url, params=params)
@@ -74,6 +84,11 @@ class HeatLinkAPIClient:
                         params=params,
                         json=data,
                     )
+                
+                # 检查是否发生重定向，记录日志
+                if response.history:
+                    redirects = [f"{r.status_code}: {r.url} -> {r.headers.get('location', 'unknown')}" for r in response.history]
+                    logger.info(f"Request was redirected: {' -> '.join(redirects)} (final: {response.url})")
                 
                 # Raise exception for 4xx/5xx responses
                 response.raise_for_status()
@@ -203,6 +218,7 @@ class HeatLinkAPIClient:
     # Source endpoints
     async def get_sources(self, use_cache: bool = True, force_update: bool = False) -> Dict[str, Any]:
         """Get all available sources from HeatLink API."""
+        # 确保URL末尾带有斜杠以避免重定向
         return await self.get(
             "external/sources",
             use_cache=use_cache,
@@ -336,14 +352,138 @@ class HeatLinkAPIClient:
         )
 
     async def get_sources_stats(self, use_cache: bool = True, force_update: bool = False) -> Dict[str, Any]:
-        """Get sources statistics from HeatLink API."""
-        return await self.get(
-            "external/sources-stats",
-            use_cache=use_cache,
-            cache_key_prefix="sources_stats",
-            force_refresh=force_update,
-            cache_ttl=self.cache_config["sources_stats"]
-        )
+        """Get sources statistics from HeatLink API by aggregating data from all sources."""
+        cache_key = "sources_stats:all"
+        
+        # Try to get data from cache if enabled
+        if use_cache and not force_update:
+            cached_data = await redis_manager.get(cache_key)
+            if cached_data:
+                logger.debug(f"Cache hit for {cache_key}")
+                return cached_data
+                
+        try:
+            # First, get all sources
+            sources_response = await self.get_sources(use_cache=use_cache, force_update=force_update)
+            
+            # Initialize categories counter
+            categories_count = {}
+            source_count = 0
+            news_count = 0
+            
+            # Adapt to different API response formats
+            sources_list = []
+            if isinstance(sources_response, list):
+                # If API returns a list directly
+                sources_list = sources_response
+            elif isinstance(sources_response, dict):
+                # If API returns a dict with sources key
+                sources_list = sources_response.get("sources", [])
+                # Or try other common keys if sources not found
+                if not sources_list and "items" in sources_response:
+                    sources_list = sources_response.get("items", [])
+                elif not sources_list and "data" in sources_response:
+                    sources_list = sources_response.get("data", [])
+            
+            # Log source count
+            logger.debug(f"Processing {len(sources_list)} sources for stats")
+            
+            # For each source, get its stats
+            for source in sources_list:
+                # Try different possible id field names
+                source_id = None
+                for id_field in ["id", "source_id", "name", "key"]:
+                    if id_field in source:
+                        source_id = source.get(id_field)
+                        break
+                        
+                if not source_id:
+                    logger.warning(f"Skipping source without id: {source}")
+                    continue
+                
+                source_count += 1
+                
+                try:
+                    # Get stats for this source - using the correct API path
+                    source_stats = await self.get(
+                        f"external/source/{source_id}",
+                        use_cache=use_cache,
+                        cache_key_prefix=f"source:{source_id}:stats",
+                        force_refresh=force_update,
+                        cache_ttl=self.cache_config["source_detail"]
+                    )
+                    
+                    # Aggregate categories - handle different return structures
+                    source_categories = {}
+                    
+                    # Option 1: Direct dictionary of categories
+                    if "categories" in source_stats and isinstance(source_stats["categories"], dict):
+                        source_categories = source_stats["categories"]
+                    
+                    # Option 2: List of category objects
+                    elif "categories" in source_stats and isinstance(source_stats["categories"], list):
+                        for cat_obj in source_stats["categories"]:
+                            if isinstance(cat_obj, dict) and "name" in cat_obj and "count" in cat_obj:
+                                source_categories[cat_obj["name"]] = cat_obj["count"]
+                    
+                    # Option 3: Look for categories in items or news objects
+                    elif "items" in source_stats:
+                        for item in source_stats["items"]:
+                            if "category" in item and item["category"]:
+                                cat = item["category"]
+                                source_categories[cat] = source_categories.get(cat, 0) + 1
+                    
+                    # If still no categories found but we have items, use default category
+                    if not source_categories and "items" in source_stats:
+                        source_categories["未分类"] = len(source_stats["items"])
+                    
+                    # Add categories to count
+                    for category, count in source_categories.items():
+                        if category:
+                            categories_count[category] = categories_count.get(category, 0) + count
+                            news_count += count
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to get stats for source {source_id}: {e}")
+                    continue
+            
+            # Ensure we have at least some default categories if none found
+            if not categories_count:
+                categories_count = {
+                    "科技": 0,
+                    "财经": 0,
+                    "教育": 0,
+                    "汽车": 0,
+                    "未分类": 0
+                }
+            
+            # Create aggregated stats result
+            result = {
+                "categories": categories_count,
+                "sources_count": source_count,
+                "news_count": news_count
+            }
+            
+            # Cache the results
+            if use_cache:
+                await redis_manager.set(cache_key, result, expire=self.cache_config["sources_stats"])
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error aggregating sources stats: {e}")
+            # Return default categories on error
+            return {
+                "categories": {
+                    "科技": 0,
+                    "财经": 0,
+                    "教育": 0,
+                    "汽车": 0,
+                    "未分类": 0
+                }, 
+                "sources_count": 0, 
+                "news_count": 0
+            }
         
     # 缓存管理方法
     async def clear_all_caches(self) -> bool:
@@ -353,7 +493,11 @@ class HeatLinkAPIClient:
             if redis_manager.redis_client:
                 keys = await redis_manager.redis_client.keys(pattern)
                 if keys:
-                    await redis_manager.redis_client.delete(*keys)
+                    # 使用await处理异步调用
+                    if len(keys) > 1:
+                        await redis_manager.redis_client.delete(*keys)
+                    elif keys:
+                        await redis_manager.redis_client.delete(keys[0])
                 logger.info(f"Cleared all HeatLink API caches: {len(keys)} keys")
                 return True
             return False
@@ -368,7 +512,11 @@ class HeatLinkAPIClient:
             if redis_manager.redis_client:
                 keys = await redis_manager.redis_client.keys(pattern)
                 if keys:
-                    await redis_manager.redis_client.delete(*keys)
+                    # 使用await处理异步调用
+                    if len(keys) > 1:
+                        await redis_manager.redis_client.delete(*keys)
+                    elif keys:
+                        await redis_manager.redis_client.delete(keys[0])
                 logger.info(f"Cleared {prefix} caches: {len(keys)} keys")
                 return True
             return False

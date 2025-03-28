@@ -2,8 +2,9 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from loguru import logger
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 import traceback
+from sqlalchemy import select
 
 from app.db.redis import redis_manager
 from app.db.session import get_db
@@ -21,7 +22,7 @@ async def get_hot_topics(
     category_limit: int = Query(5, ge=1, le=20, description="Number of topics per category to fetch"),
     force_update: bool = Query(False, description="Force fetching fresh data from sources"),
     use_cache: bool = Query(True, description="Use Redis cache if available"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get hot topics.
@@ -41,7 +42,7 @@ async def get_hot_topics(
     try:
         logger.info("开始从数据库获取热门话题数据")
         # 从数据库获取热门话题
-        hot_topics = topic_crud.get_hot_topics(db, limit=hot_limit)
+        hot_topics = await topic_crud.get_hot_topics(db, limit=hot_limit)
         logger.info(f"成功获取到 {len(hot_topics)} 条热门话题")
         
         # 转换为字典格式
@@ -50,7 +51,9 @@ async def get_hot_topics(
         # 获取推荐内容
         # 这里简化处理，将热度靠前但不在热门话题中的主题作为推荐内容
         logger.info("获取推荐内容")
-        recommended_topics = db.query(Topic).order_by(Topic.heat.desc()).limit(hot_limit + recommended_limit).all()
+        stmt = select(Topic).order_by(Topic.heat.desc()).limit(hot_limit + recommended_limit)
+        result = await db.execute(stmt)
+        recommended_topics = list(result.scalars().all())
         recommended_ids = {topic.id for topic in hot_topics}
         recommended_topics_data = [
             topic.to_dict() for topic in recommended_topics 
@@ -61,14 +64,16 @@ async def get_hot_topics(
         # 获取分类数据
         # 获取所有存在的分类
         logger.info("获取分类数据")
-        categories = db.query(Topic.category).distinct().all()
+        stmt = select(Topic.category).distinct()
+        result = await db.execute(stmt)
+        categories = result.all()
         category_names = [cat[0] for cat in categories if cat[0]]
         logger.info(f"成功获取到 {len(category_names)} 个分类: {category_names}")
         
         # 按分类获取主题
         categories_data = {}
         for category_name in category_names:
-            category_topics = topic_crud.get_by_category(
+            category_topics = await topic_crud.get_by_category(
                 db, category=category_name, limit=category_limit
             )
             categories_data[category_name] = [topic.to_dict() for topic in category_topics]
@@ -191,6 +196,7 @@ async def get_sources(
 @router.get("/categories")
 async def get_categories(
     use_cache: bool = Query(True, description="Use Redis cache if available"),
+    force_refresh: bool = Query(False, description="Force refresh data from sources"),
 ):
     """
     Get topic categories.
@@ -199,8 +205,16 @@ async def get_categories(
     """
     cache_key = "categories:all"
     
-    # Try to get data from cache if enabled
-    if use_cache:
+    # Clear cache if force refresh
+    if force_refresh and redis_manager.is_connected:
+        try:
+            await redis_manager.delete(cache_key)
+            logger.debug(f"Cleared cache for {cache_key}")
+        except Exception as e:
+            logger.warning(f"Failed to clear cache: {e}")
+    
+    # Try to get data from cache if enabled and not forcing refresh
+    if use_cache and not force_refresh:
         cached_data = await redis_manager.get(cache_key)
         if cached_data:
             logger.debug("Returning cached categories data")
@@ -208,8 +222,19 @@ async def get_categories(
     
     try:
         # Fetch stats from HeatLink API which includes categories
-        stats_data = await heatlink_client.get_sources_stats()
+        stats_data = await heatlink_client.get_sources_stats(use_cache=use_cache, force_update=force_refresh)
         categories = stats_data.get("categories", {})
+        
+        # Ensure we have some categories even if empty
+        if not categories:
+            logger.warning("No categories found in sources stats, using defaults")
+            categories = {
+                "科技": 0,
+                "财经": 0,
+                "教育": 0,
+                "汽车": 0,
+                "未分类": 0
+            }
         
         result = {
             "categories": [
@@ -225,16 +250,22 @@ async def get_categories(
         return result
     except Exception as e:
         logger.error(f"Error fetching categories: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Error fetching categories: {str(e)}"
-        )
+        # Return default categories on error
+        return {
+            "categories": [
+                {"name": "科技", "count": 0},
+                {"name": "财经", "count": 0},
+                {"name": "教育", "count": 0},
+                {"name": "汽车", "count": 0},
+                {"name": "未分类", "count": 0}
+            ]
+        }
 
 
 @router.get("/{topic_id}")
 async def get_topic_detail(
     topic_id: int = Path(..., description="The ID of the topic to get"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get a specific topic by ID.
@@ -242,7 +273,7 @@ async def get_topic_detail(
     Returns detailed information about a specific topic.
     """
     try:
-        topic = topic_crud.get(db, id=topic_id)
+        topic = await topic_crud.get(db, id=topic_id)
         if not topic:
             raise HTTPException(
                 status_code=404,

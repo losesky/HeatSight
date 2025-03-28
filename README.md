@@ -19,7 +19,7 @@ HeatSight是一个基于HeatLink API开发的专业工具站点，面向内容�
 ```javascript
 // 前端调用HeatLink API获取热点数据并进行可视化
 async function fetchHotTopics() {
-  const response = await fetch('/api/external/hot');
+  const response = await fetch('/external/hot');
   const data = await response.json();
   
   // 多维度处理和分类展示

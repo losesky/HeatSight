@@ -6,7 +6,8 @@ from typing import Any, Dict, Generic, List, Optional, Type, TypeVar, Union
 
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.db.session import Base
 
@@ -26,34 +27,38 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         """
         self.model = model
 
-    def get(self, db: Session, id: Any) -> Optional[ModelType]:
+    async def get(self, db: AsyncSession, id: Any) -> Optional[ModelType]:
         """
         Get an item by ID.
         """
-        return db.query(self.model).filter(self.model.id == id).first()
+        statement = select(self.model).where(self.model.id == id)
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
 
-    def get_multi(
-        self, db: Session, *, skip: int = 0, limit: int = 100
+    async def get_multi(
+        self, db: AsyncSession, *, skip: int = 0, limit: int = 100
     ) -> List[ModelType]:
         """
         Get multiple items.
         """
-        return db.query(self.model).offset(skip).limit(limit).all()
+        statement = select(self.model).offset(skip).limit(limit)
+        result = await db.execute(statement)
+        return list(result.scalars().all())
 
-    def create(self, db: Session, *, obj_in: CreateSchemaType) -> ModelType:
+    async def create(self, db: AsyncSession, *, obj_in: CreateSchemaType) -> ModelType:
         """
         Create a new item.
         """
         obj_in_data = jsonable_encoder(obj_in)
         db_obj = self.model(**obj_in_data)
         db.add(db_obj)
-        db.commit()
-        db.refresh(db_obj)
+        await db.commit()
+        await db.refresh(db_obj)
         return db_obj
 
-    def update(
+    async def update(
         self,
-        db: Session,
+        db: AsyncSession,
         *,
         db_obj: ModelType,
         obj_in: Union[UpdateSchemaType, Dict[str, Any]]
@@ -65,20 +70,23 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         if isinstance(obj_in, dict):
             update_data = obj_in
         else:
-            update_data = obj_in.dict(exclude_unset=True)
+            update_data = obj_in.model_dump(exclude_unset=True)
         for field in obj_data:
             if field in update_data:
                 setattr(db_obj, field, update_data[field])
         db.add(db_obj)
-        db.commit()
-        db.refresh(db_obj)
+        await db.commit()
+        await db.refresh(db_obj)
         return db_obj
 
-    def remove(self, db: Session, *, id: int) -> ModelType:
+    async def remove(self, db: AsyncSession, *, id: int) -> ModelType:
         """
         Remove an item.
         """
-        obj = db.query(self.model).get(id)
-        db.delete(obj)
-        db.commit()
+        statement = select(self.model).where(self.model.id == id)
+        result = await db.execute(statement)
+        obj = result.scalar_one_or_none()
+        if obj:
+            await db.delete(obj)
+            await db.commit()
         return obj 

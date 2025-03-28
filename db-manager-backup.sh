@@ -306,20 +306,11 @@ init_db_structure() {
         id SERIAL PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         summary TEXT,
-        source_name VARCHAR(100),
-        category VARCHAR(50),
-        published_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        url VARCHAR(512),
-        image_url VARCHAR(512),
-        heat FLOAT DEFAULT 0,
-        extra JSONB,
+        category VARCHAR(100),
+        heat FLOAT,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
-      
-      -- 创建索引
-      CREATE INDEX IF NOT EXISTS topics_category_idx ON topics(category);
-      CREATE INDEX IF NOT EXISTS topics_heat_idx ON topics(heat DESC);
     "; then
       echo -e "${RED}错误: 创建topics表失败${NC}"
       return 1
@@ -350,9 +341,6 @@ init_db_structure() {
     fi
     echo -e "${GREEN}content_suggestions表创建成功。${NC}"
   fi
-  
-  # 初始化新闻热度评分表结构
-  init_news_heat_scores_structure
   
   echo -e "${GREEN}数据库结构初始化完成!${NC}"
   return 0
@@ -940,158 +928,59 @@ stop_db_services() {
   echo -e "${GREEN}PostgreSQL数据库服务已停止${NC}"
 }
 
-# 初始化数据库数据
-init_db_data() {
-  # 初始化数据之前必须先执行这些步骤
-  if ! check_docker_running; then
-    return 1
-  fi
-  
-  if ! ensure_db_exists; then
-    return 1
-  fi
-  
-  # 执行数据初始化
-  init_topic_data
-  init_content_suggestions
-  update_topic_content_links
-  
-  echo -e "${GREEN}数据库数据初始化完成!${NC}"
-  return 0
-}
-
 # 清理数据库数据
 clean_db_data() {
-  echo -e "${YELLOW}警告: 此操作将清空数据库中的所有数据。${NC}"
-  read -p "是否确认清空数据? (y/n): " confirm
+  echo -e "${RED}警告: 这将删除heatsight_dev数据库及其数据!${NC}"
+  echo -e "${YELLOW}确认删除? (y/n)${NC}"
+  read -r CONFIRM
   
-  if [[ $confirm =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}正在清空数据...${NC}"
-    
-    # 使用Docker执行SQL命令清空表
-    if docker exec postgres-local psql -U postgres -d heatsight_dev -c "
-      TRUNCATE topics CASCADE;
-      TRUNCATE content_suggestions CASCADE;
-    "; then
-      echo -e "${GREEN}数据清空完成!${NC}"
+  if [[ $CONFIRM =~ ^[Yy]$ ]]; then
+    # 检查PostgreSQL容器是否运行
+    if docker ps | grep -q "postgres-local"; then
+      echo -e "${YELLOW}PostgreSQL容器正在运行，继续操作...${NC}"
+      
+      # 删除heatsight_dev数据库
+      echo -e "${YELLOW}删除heatsight_dev数据库...${NC}"
+      if docker exec postgres-local psql -U postgres -c "DROP DATABASE IF EXISTS heatsight_dev WITH (FORCE);" 2>/dev/null; then
+        echo -e "${GREEN}heatsight_dev数据库已成功删除${NC}"
+      else
+        echo -e "${RED}删除heatsight_dev数据库失败${NC}"
+        echo -e "${YELLOW}可能需要先断开所有连接，正在尝试断开连接...${NC}"
+        
+        # 尝试断开所有到heatsight_dev的连接
+        docker exec postgres-local psql -U postgres -c "
+          SELECT pg_terminate_backend(pid) 
+          FROM pg_stat_activity 
+          WHERE datname = 'heatsight_dev' AND pid <> pg_backend_pid();
+        " 2>/dev/null
+        
+        # 再次尝试删除数据库
+        if docker exec postgres-local psql -U postgres -c "DROP DATABASE IF EXISTS heatsight_dev WITH (FORCE);" 2>/dev/null; then
+          echo -e "${GREEN}heatsight_dev数据库已成功删除${NC}"
+        else
+          echo -e "${RED}删除heatsight_dev数据库失败，可能需要手动操作${NC}"
+          return 1
+        fi
+      fi
+      
+      # 重新创建一个空的heatsight_dev数据库
+      echo -e "${YELLOW}创建新的空heatsight_dev数据库...${NC}"
+      if docker exec postgres-local createdb -U postgres heatsight_dev 2>/dev/null; then
+        echo -e "${GREEN}新的heatsight_dev数据库已创建${NC}"
+      else
+        echo -e "${RED}创建新的heatsight_dev数据库失败${NC}"
+        return 1
+      fi
+      
+      echo -e "${GREEN}heatsight_dev数据库清理完成${NC}"
+      echo -e "${YELLOW}注意: PostgreSQL容器和其他数据库未被删除或修改${NC}"
     else
-      echo -e "${RED}清空数据失败，请确保数据库服务正在运行。${NC}"
+      echo -e "${YELLOW}PostgreSQL容器未运行，请先启动数据库服务${NC}"
+      return 1
     fi
   else
     echo -e "${YELLOW}操作已取消${NC}"
   fi
-}
-
-# Function to add to db-manager.sh - Initialize news heat score data structure without sample data
-init_news_heat_scores_structure() {
-  echo -e "${YELLOW}初始化新闻热度评分表结构...${NC}"
-  
-  # 创建SQL脚本创建表结构但不添加数据
-  cat > init_heat_scores_structure.sql << EOF
--- 检查news_heat_scores表是否存在
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_tables WHERE tablename = 'news_heat_scores') THEN
-    RAISE NOTICE '创建news_heat_scores表...';
-    
-    CREATE TABLE IF NOT EXISTS news_heat_scores (
-      id VARCHAR PRIMARY KEY,
-      news_id VARCHAR NOT NULL,
-      source_id VARCHAR NOT NULL,
-      title VARCHAR NOT NULL,
-      url VARCHAR NOT NULL,
-      heat_score FLOAT NOT NULL,
-      relevance_score FLOAT,
-      recency_score FLOAT,
-      popularity_score FLOAT,
-      meta_data JSONB,
-      keywords JSONB,
-      calculated_at TIMESTAMP DEFAULT NOW(),
-      published_at TIMESTAMP NOT NULL,
-      updated_at TIMESTAMP DEFAULT NOW()
-    );
-    
-    -- 创建索引
-    CREATE INDEX IF NOT EXISTS idx_news_heat_scores_news_id ON news_heat_scores (news_id);
-    CREATE INDEX IF NOT EXISTS idx_news_heat_scores_source_id ON news_heat_scores (source_id);
-    CREATE INDEX IF NOT EXISTS idx_news_heat_scores_heat_score ON news_heat_scores (heat_score);
-    CREATE INDEX IF NOT EXISTS idx_news_heat_scores_published_at ON news_heat_scores (published_at);
-    
-    RAISE NOTICE 'news_heat_scores表创建完成';
-  ELSE
-    RAISE NOTICE 'news_heat_scores表已存在，跳过创建';
-  END IF;
-END
-\$\$;
-
--- 显示表结构信息
-\d news_heat_scores
-EOF
-
-  # 执行SQL脚本
-  docker exec -i postgres-local psql -U postgres -d heatsight_dev -f - < init_heat_scores_structure.sql
-  
-  # 清理临时文件
-  rm init_heat_scores_structure.sql
-  
-  echo -e "${GREEN}新闻热度评分表结构初始化完成!${NC}"
-}
-
-# Function to trigger heat score generation via API endpoint
-trigger_heat_score_generation() {
-  echo -e "${YELLOW}触发新闻热度评分生成...${NC}"
-  
-  # 检查后端服务是否运行
-  echo -e "${YELLOW}检查HeatSight后端服务状态...${NC}"
-  
-  # 检查服务状态的两种方法：
-  # 1. 通过netstat检查端口
-  # 2. 直接调用健康检查API
-  
-  BACKEND_RUNNING=false
-  
-  # 方法1：检查端口（需要安装net-tools）
-  if command -v netstat &> /dev/null; then
-    if netstat -tuln | grep ":8080" &> /dev/null; then
-      BACKEND_RUNNING=true
-      echo -e "${GREEN}检测到HeatSight后端服务正在运行 (端口8080)${NC}"
-    fi
-  fi
-  
-  # 方法2：调用健康检查API
-  if ! $BACKEND_RUNNING; then
-    echo -e "${YELLOW}尝试通过API检查服务状态...${NC}"
-    if curl -s "http://localhost:8080/api/health/check" -o /dev/null; then
-      BACKEND_RUNNING=true
-      echo -e "${GREEN}HeatSight后端服务正在运行 (API检查成功)${NC}"
-    else
-      echo -e "${RED}无法连接到HeatSight后端服务${NC}"
-    fi
-  fi
-  
-  if ! $BACKEND_RUNNING; then
-    echo -e "${RED}HeatSight后端服务未运行，无法触发热度评分生成${NC}"
-    echo -e "${YELLOW}请先启动后端服务，然后再尝试此操作${NC}"
-    echo -e "${YELLOW}启动命令: cd backend && python -m run.py${NC}"
-    return 1
-  fi
-  
-  # 调用API触发热度生成
-  echo -e "${YELLOW}调用API触发热度评分生成...${NC}"
-  API_RESPONSE=$(curl -s -X POST "http://localhost:8080/api/heat-score/update")
-  
-  if echo "$API_RESPONSE" | grep -q "success"; then
-    echo -e "${GREEN}热度评分生成任务已触发，正在后台处理中${NC}"
-    echo -e "${YELLOW}API响应: ${API_RESPONSE}${NC}"
-    echo -e "${YELLOW}热度评分生成是一个异步过程，可能需要一些时间完成${NC}"
-    echo -e "${YELLOW}您可以稍后通过'查看数据库状态'选项检查热度评分数据${NC}"
-  else
-    echo -e "${RED}触发热度评分生成失败${NC}"
-    echo -e "${YELLOW}API响应: ${API_RESPONSE}${NC}"
-    return 1
-  fi
-  
-  return 0
 }
 
 # 显示数据库状态
@@ -1161,20 +1050,6 @@ show_db_status() {
   if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT t.title, COUNT(cs.id) AS suggestion_count FROM topics t LEFT JOIN content_suggestions cs ON t.id = cs.topic_id GROUP BY t.id, t.title ORDER BY suggestion_count DESC;" 2>/dev/null; then
     echo -e "${RED}无法查询主题-内容建议关联，请确保相关表已创建${NC}"
   fi
-  
-  echo -e "\n${YELLOW}新闻热度评分数据统计:${NC}"
-  if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT COUNT(*) AS total_heat_scores FROM news_heat_scores;" 2>/dev/null; then
-    echo -e "${RED}无法查询 news_heat_scores 表，请确保表已创建${NC}"
-  fi
-  
-  if docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT COUNT(*) AS count FROM news_heat_scores;" 2>/dev/null | grep -q "(0 rows)"; then
-    echo -e "${YELLOW}news_heat_scores 表中没有数据，请通过API触发热度评分生成${NC}"
-  else
-    echo -e "\n${YELLOW}热度最高的新闻:${NC}"
-    if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT id, title, source_id, heat_score FROM news_heat_scores ORDER BY heat_score DESC LIMIT 5;" 2>/dev/null; then
-      echo -e "${RED}无法查询热度最高的新闻，请确保 news_heat_scores 表已创建并包含数据${NC}"
-    fi
-  fi
 }
 
 # 初始化所有数据（主题+内容建议+关联）
@@ -1185,10 +1060,6 @@ init_all_data() {
   init_topic_data
   init_content_suggestions
   update_topic_content_links
-  
-  # 添加关于新闻热度评分数据的提示信息
-  echo -e "${YELLOW}注意: 新闻热度评分数据将通过系统生成，而非预设数据${NC}"
-  echo -e "${YELLOW}请在数据库初始化完成后，使用菜单选项 '触发热度评分生成' 来生成真实热度数据${NC}"
   
   echo -e "${GREEN}所有数据初始化完成!${NC}"
   return 0
@@ -1204,8 +1075,6 @@ main_menu() {
     echo -e "1) ${GREEN}启动数据库服务${NC}"
     echo -e "2) ${GREEN}初始化数据库结构${NC}"
     echo -e "3) ${CYAN}初始化所有数据${NC} (主题+内容建议+关联)"
-    echo -e "3.1) ${CYAN}初始化新闻热度评分表结构${NC}"
-    echo -e "3.2) ${CYAN}触发热度评分生成${NC} (需要后端服务运行)"
     echo -e "4) ${CYAN}查看数据库状态${NC}"
     echo -e "5) ${RED}停止数据库服务${NC}"
     echo -e "6) ${RED}清理数据库数据${NC}"
@@ -1226,16 +1095,6 @@ main_menu() {
         ;;
       3) 
         init_all_data
-        echo -e "\n${YELLOW}按任意键继续...${NC}"
-        read -n1
-        ;;
-      "3.1") 
-        init_news_heat_scores_structure
-        echo -e "\n${YELLOW}按任意键继续...${NC}"
-        read -n1
-        ;;
-      "3.2")
-        trigger_heat_score_generation
         echo -e "\n${YELLOW}按任意键继续...${NC}"
         read -n1
         ;;

@@ -1,28 +1,36 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import settings
 
-# Create SQLAlchemy engine
-engine = create_engine(
+# 创建异步 SQLAlchemy 引擎
+engine = create_async_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,
     echo=settings.DEBUG,
 )
 
-# Create SessionLocal class
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# 创建异步会话类
+SessionLocal = sessionmaker(
+    engine, 
+    class_=AsyncSession, 
+    expire_on_commit=False,
+    autocommit=False, 
+    autoflush=False
+)
 
-# Create declarative base model class
+# 为了兼容性添加别名
+async_session_maker = SessionLocal
+
+# 创建声明性基类模型
 Base = declarative_base()
 
 
-# Dependency to get DB session
-def get_db():
-    """Dependency function that yields a SQLAlchemy database session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close() 
+# 获取数据库会话的依赖函数
+async def get_db():
+    """提供 SQLAlchemy 异步数据库会话的依赖函数。"""
+    async with SessionLocal() as db:
+        try:
+            yield db
+        finally:
+            await db.close() 
