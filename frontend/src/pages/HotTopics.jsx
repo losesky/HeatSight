@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { useQuery } from 'react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { 
   FiFilter, FiRefreshCw, FiClock, FiBarChart2, 
@@ -8,8 +7,8 @@ import {
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
-// API client will be implemented later
-import { fetchHotTopics, fetchCategories } from '../api/api';
+// 使用自定义hooks
+import { useHotTopics, useCategories, useInvalidateTopics } from '../hooks';
 
 const HotTopics = () => {
   const navigate = useNavigate();
@@ -21,28 +20,24 @@ const HotTopics = () => {
     searchParams.get('category') || 'all'
   );
   
-  // Filter options
-  const { data: categoriesData } = useQuery('categories', fetchCategories);
+  // 使用自定义hooks获取分类
+  const { data: categoriesData } = useCategories();
   
-  // Fetch hot topics
+  // 使用自定义hooks获取热门话题
   const { 
     data, 
     isLoading, 
-    error, 
-    refetch 
-  } = useQuery(
-    ['hotTopics', activeCategory],
-    () => fetchHotTopics({ 
-      hot_limit: 20, 
-      recommended_limit: 10, 
-      category_limit: 10,
-      category: activeCategory === 'all' ? undefined : activeCategory
-    }),
-    { 
-      refetchOnWindowFocus: false,
-      staleTime: 300000, // 5 minutes
-    }
-  );
+    error,
+    refetch
+  } = useHotTopics({ 
+    hot_limit: 20, 
+    recommended_limit: 10, 
+    category_limit: 10,
+    category: activeCategory === 'all' ? undefined : activeCategory
+  });
+
+  // 获取缓存失效函数
+  const { invalidateHotTopics } = useInvalidateTopics();
 
   // Update URL when filters change
   useEffect(() => {
@@ -64,7 +59,8 @@ const HotTopics = () => {
 
   // Handle refresh
   const handleRefresh = () => {
-    refetch();
+    // 使用invalidateHotTopics使缓存失效，然后重新获取数据
+    invalidateHotTopics().then(() => refetch());
   };
 
   // Loading state

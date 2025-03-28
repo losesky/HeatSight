@@ -6,6 +6,7 @@ import './App.css';
 import Home from './pages/Home';
 import TopicDetail from './pages/TopicDetail';
 import ContentWorkshop from './pages/ContentWorkshop';
+import HotNewsPage from './pages/HotNewsPage';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import NotFound from './pages/NotFound';
@@ -21,6 +22,8 @@ function App() {
             <Route path="/" element={<Home />} />
             <Route path="/topic/:id" element={<TopicDetail />} />
             <Route path="/content-workshop" element={<ContentWorkshop />} />
+            <Route path="/hot-news" element={<HotNewsPage />} />
+            <Route path="/hot-news/:sourceId" element={<HotNewsPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>

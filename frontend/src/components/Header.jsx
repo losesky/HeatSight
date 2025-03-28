@@ -33,6 +33,18 @@ const Header = () => {
                   }
                   end
                 >
+                  首页
+                </NavLink>
+              </li>
+              <li>
+                <NavLink
+                  to="/hot-news"
+                  className={({ isActive }) =>
+                    isActive
+                      ? 'text-blue-600 font-medium'
+                      : 'text-gray-700 hover:text-blue-600 transition-colors'
+                  }
+                >
                   热门资讯
                 </NavLink>
               </li>
@@ -102,6 +114,19 @@ const Header = () => {
                   }
                   onClick={toggleMenu}
                   end
+                >
+                  首页
+                </NavLink>
+              </li>
+              <li>
+                <NavLink
+                  to="/hot-news"
+                  className={({ isActive }) =>
+                    isActive
+                      ? 'block text-blue-600 font-medium py-2'
+                      : 'block text-gray-700 hover:text-blue-600 py-2 transition-colors'
+                  }
+                  onClick={toggleMenu}
                 >
                   热门资讯
                 </NavLink>
