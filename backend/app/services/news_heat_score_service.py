@@ -3,10 +3,13 @@ import uuid
 import asyncio
 import jieba
 import jieba.analyse
+import re
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+import os
+from pathlib import Path
 
 from app.core.config import settings
 from app.db.redis import redis_manager
@@ -15,6 +18,36 @@ from app.schemas.news_heat_score import HeatScoreCreate, HeatScoreUpdate
 from app.crud import news_heat_score
 from app.services.heatlink_client import HeatLinkAPIClient
 
+# 设置NLTK数据目录
+NLTK_DATA_DIR = Path(__file__).parent.parent.parent / "nltk_data"
+os.environ['NLTK_DATA'] = str(NLTK_DATA_DIR)
+
+try:
+    import nltk
+    from nltk.tokenize import RegexpTokenizer
+    from nltk.corpus import stopwords
+    
+    # 创建基本的分词器
+    word_tokenizer = RegexpTokenizer(r'\w+')
+    
+    # 确保必要的NLTK数据已下载
+    def ensure_nltk_resource(resource):
+        try:
+            if resource == 'stopwords':
+                # 测试停用词功能
+                stopwords.words('english')
+        except LookupError:
+            logger.info(f"正在下载NLTK资源: {resource}")
+            nltk.download(resource, quiet=True, download_dir=str(NLTK_DATA_DIR))
+    
+    # 只下载停用词资源
+    ensure_nltk_resource('stopwords')
+    
+    NLTK_AVAILABLE = True
+    logger.info("✨ NLTK初始化成功")
+except Exception as e:
+    logger.warning(f"⚠️ NLTK初始化失败: {e}")
+    NLTK_AVAILABLE = False
 
 # 算法常量配置
 BASELINE_FACTOR = 10  # 基准系数，用于归一化关键词匹配度
@@ -36,42 +69,111 @@ class NewsHeatScoreService:
     def __init__(self):
         self.heatlink_client = HeatLinkAPIClient()
         
-        # 加载停用词（可选）
+        # 加载停用词
         self._load_stopwords()
         
-        # 初始化jieba分词
-        self._init_jieba()
+        # 初始化分词器
+        self._init_tokenizers()
 
     def _load_stopwords(self):
-        """加载中文停用词（可选）"""
+        """加载中英文停用词"""
         try:
-            # 如果有停用词文件，可以在这里加载
-            # with open("path/to/stopwords.txt", "r", encoding="utf-8") as f:
-            #     self.stopwords = set([line.strip() for line in f])
-            self.stopwords = set()
-            logger.info("停用词初始化完成")
+            # 加载中文停用词
+            self.cn_stopwords = set()
+            # 如果有中文停用词文件，可以在这里加载
+            # with open("path/to/cn_stopwords.txt", "r", encoding="utf-8") as f:
+            #     self.cn_stopwords = set([line.strip() for line in f])
+            
+            # 加载英文停用词
+            if NLTK_AVAILABLE:
+                self.en_stopwords = set(stopwords.words('english'))
+            else:
+                # 基本英文停用词
+                self.en_stopwords = {'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for',
+                                   'from', 'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on',
+                                   'that', 'the', 'to', 'was', 'were', 'will', 'with'}
+            
+            logger.info("✨ 停用词加载完成")
         except Exception as e:
-            logger.warning(f"停用词加载失败: {e}")
-            self.stopwords = set()
+            logger.warning(f"⚠️ 停用词加载失败: {e}")
+            self.cn_stopwords = set()
+            self.en_stopwords = set()
 
-    def _init_jieba(self):
-        """初始化jieba分词"""
-        # 如果有自定义词典，可以在这里加载
-        # jieba.load_userdict("path/to/userdict.txt")
-        logger.info("jieba分词初始化完成")
+    def _init_tokenizers(self):
+        """初始化分词器"""
+        # 初始化jieba分词
+        import io
+        import sys
+        
+        # 捕获jieba的stdout输出
+        stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        
+        try:
+            # jieba初始化
+            jieba.initialize()
+            
+            # 获取捕获的输出并记录到日志
+            output = sys.stdout.getvalue()
+            if output:
+                logger.debug(f"Jieba初始化输出:\n{output}")
+        finally:
+            # 恢复标准输出
+            sys.stdout = stdout
+        
+        logger.info("✨ 分词器初始化完成")
+
+    def _is_chinese(self, text: str) -> bool:
+        """判断文本是否主要为中文"""
+        # 统计中文字符的数量
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+        # 如果中文字符占比超过30%，认为是中文文本
+        return chinese_chars / len(text) > 0.3 if text else False
+
+    def _tokenize_text(self, text: str) -> List[str]:
+        """根据文本语言选择合适的分词方法"""
+        if self._is_chinese(text):
+            # 中文分词
+            words = list(jieba.cut(text))
+            # 过滤中文停用词
+            words = [w for w in words if w not in self.cn_stopwords and len(w.strip()) > 0]
+        else:
+            # 英文分词
+            if NLTK_AVAILABLE:
+                # 使用正则表达式分词器
+                words = word_tokenizer.tokenize(text.lower())
+            else:
+                # 简单的英文分词（按空格分割）
+                words = text.lower().split()
+            # 过滤英文停用词和标点符号
+            words = [w for w in words if w not in self.en_stopwords and len(w.strip()) > 0]
+        
+        return words
 
     async def _extract_keywords(self, title: str, content: str = "") -> List[Dict[str, Any]]:
-        """使用中文分词技术提取新闻关键词"""
+        """使用中英文分词技术提取新闻关键词"""
         # 合并标题和内容，标题权重更高所以重复一次
         text = f"{title} {title} {content}"
         
-        # 使用jieba提取关键词（返回带权重的关键词）
-        keywords = jieba.analyse.textrank(text, topK=5, withWeight=True)
+        if self._is_chinese(text):
+            # 中文关键词提取
+            keywords = jieba.analyse.textrank(text, topK=5, withWeight=True)
+        else:
+            # 英文关键词提取
+            words = self._tokenize_text(text)
+            # 计算词频
+            from collections import Counter
+            word_freq = Counter(words)
+            total = sum(word_freq.values())
+            # 转换为带权重的关键词列表
+            keywords = [(word, count/total) for word, count in word_freq.most_common(5)]
         
         # 转换为所需的数据结构
         result = []
         for word, weight in keywords:
-            if word not in self.stopwords:  # 过滤停用词
+            if (word not in self.cn_stopwords and 
+                word not in self.en_stopwords and 
+                len(word.strip()) > 0):
                 result.append({"word": word, "weight": float(weight)})
         
         return result
@@ -79,12 +181,8 @@ class NewsHeatScoreService:
     def _calculate_title_similarity(self, title1: str, title2: str) -> float:
         """计算两个标题的相似度"""
         # 分词
-        words1 = set(jieba.cut(title1))
-        words2 = set(jieba.cut(title2))
-        
-        # 去除停用词
-        words1 = words1.difference(self.stopwords)
-        words2 = words2.difference(self.stopwords)
+        words1 = set(self._tokenize_text(title1))
+        words2 = set(self._tokenize_text(title2))
         
         # 计算Jaccard相似度
         intersection = len(words1.intersection(words2))
@@ -452,7 +550,7 @@ class NewsHeatScoreService:
 
     async def update_all_heat_scores(self, session: AsyncSession):
         """更新所有新闻热度分数"""
-        logger.info("开始更新所有新闻热度分数")
+        logger.info("🔄 开始更新所有新闻热度分数")
         
         try:
             # 1. 获取所有新闻源
@@ -471,15 +569,15 @@ class NewsHeatScoreService:
             # 3. 计算热度评分
             heat_scores = await self.calculate_batch_heat_scores(all_news_items, session)
             
-            logger.info(f"热度分数更新完成，共更新{len(heat_scores)}条新闻")
+            logger.info(f"✨ 热度分数更新完成，共更新 {len(heat_scores)} 条新闻")
             return heat_scores
         except Exception as e:
-            logger.error(f"更新热度分数失败: {e}")
+            logger.error(f"❌ 更新热度分数失败: {e}")
             raise
 
     async def update_keyword_heat(self, session: AsyncSession):
         """更新关键词热度"""
-        logger.info("开始更新关键词热度")
+        logger.info("🔄 开始更新关键词热度")
         
         try:
             # 获取最近一段时间内的热门新闻
@@ -544,21 +642,21 @@ class NewsHeatScoreService:
                 cache_key = f"{CACHE_PREFIX}:keywords"
                 await redis_manager.set(cache_key, top_keywords, expire=CACHE_TTL * 2)
                 
-                logger.info(f"关键词热度更新完成，共更新 {len(top_keywords)} 个关键词")
+                logger.info(f"✨ 关键词热度更新完成，共更新 {len(top_keywords)} 个关键词")
                 return top_keywords
             else:
-                logger.warning("未找到足够的关键词数据")
+                logger.warning("⚠️ 未找到足够的关键词数据")
                 return []
         
         except Exception as e:
-            logger.error(f"更新关键词热度失败: {str(e)}")
+            logger.error(f"❌ 更新关键词热度失败: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             raise
 
     async def update_source_weights(self, session: AsyncSession):
         """更新来源权重"""
-        logger.info("开始更新来源权重")
+        logger.info("🔄 开始更新来源权重")
         
         try:
             # 获取所有新闻源
@@ -571,7 +669,7 @@ class NewsHeatScoreService:
                 # 如果API直接返回列表，就直接使用
                 sources = sources_data
             
-            logger.info(f"成功获取到 {len(sources)} 个新闻源")
+            logger.info(f"📊 成功获取到 {len(sources)} 个新闻源")
             
             # 初始化来源权重数据
             source_stats = {}
@@ -580,7 +678,7 @@ class NewsHeatScoreService:
             for source in sources:
                 source_id = source.get("source_id") or source.get("id")
                 if not source_id:
-                    logger.warning(f"跳过没有有效ID的源")
+                    logger.warning("⚠️ 跳过没有有效ID的源")
                     continue
                     
                 try:
@@ -593,17 +691,14 @@ class NewsHeatScoreService:
                     # 先尝试从'news'键获取，这是API当前的格式
                     if isinstance(source_news, dict) and "news" in source_news:
                         news_items = source_news.get("news", [])
-                        logger.debug(f"从'news'键找到 {len(news_items)} 条新闻项")
                     
                     # 如果没找到，再尝试从'items'键获取（旧格式的兼容）
                     elif isinstance(source_news, dict) and "items" in source_news:
                         news_items = source_news.get("items", [])
-                        logger.debug(f"从'items'键找到 {len(news_items)} 条新闻项")
                     
                     # 或者API直接返回了列表
                     elif isinstance(source_news, list):
                         news_items = source_news
-                        logger.debug(f"API直接返回列表格式，包含 {len(news_items)} 条新闻项")
                     
                     # 统计该来源的数据
                     if news_items:
@@ -671,8 +766,7 @@ class NewsHeatScoreService:
                                 else:
                                     update_frequency = 50
                             except Exception as e:
-                                logger.warning(f"计算更新频率失败: {e}")
-                                # 记录更详细的错误信息以便调试
+                                logger.warning(f"⚠️ 计算更新频率失败: {e}")
                                 import traceback
                                 logger.debug(traceback.format_exc())
                         
@@ -690,26 +784,26 @@ class NewsHeatScoreService:
                             "item_count": total_items,
                             "updated_at": datetime.now(timezone.utc).isoformat()
                         }
-                        logger.debug(f"成功处理源 '{source_id}', 权重={source_weight:.2f}")
+                        logger.debug(f"✅ 成功处理源 '{source_id}', 权重={source_weight:.2f}")
                     else:
-                        logger.warning(f"源 '{source_id}' 没有返回新闻数据")
+                        logger.warning(f"⚠️ 源 '{source_id}' 没有返回新闻数据")
                 
                 except Exception as e:
-                    logger.error(f"处理来源 {source_id} 失败: {e}")
+                    logger.error(f"❌ 处理来源 {source_id} 失败: {e}")
             
             # 存储所有来源权重到Redis
             if source_stats:
                 cache_key = f"{CACHE_PREFIX}:source_weights"
                 await redis_manager.set(cache_key, source_stats, expire=CACHE_TTL * 24)  # 缓存24小时
                 
-                logger.info(f"来源权重更新完成，共更新 {len(source_stats)} 个来源")
+                logger.info(f"✨ 来源权重更新完成，共更新 {len(source_stats)} 个来源")
                 return source_stats
             else:
-                logger.warning("未获取到有效的来源数据")
+                logger.warning("⚠️ 未获取到有效的来源数据")
                 return {}
                 
         except Exception as e:
-            logger.error(f"更新来源权重失败: {str(e)}")
+            logger.error(f"❌ 更新来源权重失败: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             raise

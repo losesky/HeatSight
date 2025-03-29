@@ -20,4 +20,6 @@ pytest-asyncio>=0.21.0
 loguru>=0.6.0
 tenacity>=8.2.0
 # 中文分词
-jieba>=0.42.1 
+jieba>=0.42.1
+# 英文分词
+nltk>=3.8.1 

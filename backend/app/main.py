@@ -31,10 +31,23 @@ async def lifespan(app: FastAPI):
     # Connect to Redis
     await redis_manager.connect()
     
+    # Setup task scheduler
+    logger.info("Setting up task scheduler...")
+    scheduler.setup(app)
+    register_tasks()
+    
+    # Start the scheduler
+    logger.info("Starting task scheduler...")
+    await scheduler.start()
+    
     yield
     
     # Shutdown
     logger.info(f"Shutting down {settings.APP_NAME}")
+    
+    # Stop the scheduler
+    logger.info("Stopping task scheduler...")
+    await scheduler.stop()
     
     # Disconnect from Redis
     await redis_manager.disconnect()
@@ -62,10 +75,6 @@ def create_app() -> FastAPI:
     
     # Include API router
     app.include_router(api_router, prefix="/api")
-    
-    # Setup task scheduler
-    scheduler.setup(app)
-    register_tasks()
     
     # Mount static files
     if os.path.exists(STATIC_DIR):

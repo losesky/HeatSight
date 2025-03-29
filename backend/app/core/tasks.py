@@ -22,6 +22,7 @@ async def update_heat_scores_task(session: AsyncSession):
         logger.error(f"[任务错误] 热门新闻热度分数更新失败 - {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
+        raise
 
 
 async def update_keyword_heat_task(session: AsyncSession):
@@ -38,6 +39,7 @@ async def update_keyword_heat_task(session: AsyncSession):
         logger.error(f"[任务错误] 关键词热度更新失败 - {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
+        raise
 
 
 async def update_source_weights_task(session: AsyncSession):
@@ -54,31 +56,35 @@ async def update_source_weights_task(session: AsyncSession):
         logger.error(f"[任务错误] 来源权重更新失败 - {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
+        raise
 
 
 def register_tasks():
-    """Register all scheduled tasks."""
+    """注册所有计划任务"""
+    logger.info("🔄 开始注册计划任务...")
     
-    # 热门新闻热度更新：每10分钟
+    # 更新热度分数 - 每10分钟
     scheduler.add_task(
-        task_id="update_heat_scores",
-        func=update_heat_scores_task,
-        interval=10 * 60,  #10 minutes
-        with_session=True
+        "update_heat_scores",
+        heat_score_service.update_all_heat_scores,
+        interval=600,
+        auto_commit=True
     )
     
-    # 关键词热度更新：每60分钟
+    # 更新关键词热度 - 每60分钟
     scheduler.add_task(
-        task_id="update_keyword_heat",
-        func=update_keyword_heat_task,
-        interval=60 * 60,  # 60 minutes
-        with_session=True
+        "update_keyword_heat",
+        heat_score_service.update_keyword_heat,
+        interval=3600,
+        auto_commit=True
     )
     
-    # 来源权重更新：每天一次
+    # 更新来源权重 - 每24小时
     scheduler.add_task(
-        task_id="update_source_weights",
-        func=update_source_weights_task,
-        interval=24 * 60 * 60,  # 24 hours
-        with_session=True
-    ) 
+        "update_source_weights",
+        heat_score_service.update_source_weights,
+        interval=86400,
+        auto_commit=True
+    )
+    
+    logger.info("✨ 计划任务注册完成，共注册 3 个任务") 

@@ -88,16 +88,16 @@ if [ ! -d "backend/venv" ]; then
     
     # 升级pip
     echo -e "${BLUE}升级pip...${NC}"
-    pip install --upgrade pip
+    pip install --upgrade pip > /dev/null 2>&1
     
     # 安装依赖
     echo -e "${BLUE}安装依赖...${NC}"
-    pip install -r requirements.txt
+    pip install -r requirements.txt > /dev/null 2>&1
     
     # 检查并安装pydantic_settings (如果缺少)
     if ! pip show pydantic-settings &> /dev/null; then
         echo -e "${YELLOW}安装pydantic-settings...${NC}"
-        pip install pydantic-settings
+        pip install pydantic-settings > /dev/null 2>&1
     fi
     
     cd ..
@@ -112,7 +112,7 @@ else
     # 检查pydantic_settings是否已安装
     if ! pip show pydantic-settings &> /dev/null; then
         echo -e "${YELLOW}未检测到pydantic-settings，正在安装...${NC}"
-        pip install pydantic-settings
+        pip install pydantic-settings > /dev/null 2>&1
     fi
     
     cd ..
@@ -134,8 +134,12 @@ source venv/bin/activate
 echo -e "${BLUE}已安装的关键依赖:${NC}"
 pip list | grep -E "pydantic|fastapi|uvicorn"
 
-# 启动服务
-python main.py --reload --workers 1
+# 启动服务，将jieba的初始化输出重定向到/dev/null
+exec 3>&1  # 保存标准输出的文件描述符
+exec 1>/dev/null  # 临时重定向标准输出
+uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload --workers 1 2>&1 >&3 | grep -v -E "Building prefix dict|Loading model|Prefix dict has been built" >&3
+exec 1>&3  # 恢复标准输出
+exec 3>&-  # 关闭文件描述符 3
 
 # 脚本不应该执行到这里，因为上面的命令会持续运行
 echo -e "${RED}后端服务已停止${NC}" 

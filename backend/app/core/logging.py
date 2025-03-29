@@ -99,77 +99,131 @@ def setup_logging() -> None:
     # 配置loguru
     logger.remove()  # 移除默认处理器
     
-    # 添加控制台处理器，使用更简洁的格式
+    # 创建日志目录
+    os.makedirs(settings.LOG_DIR, exist_ok=True)
+    
+    # 定义统一的日志格式
+    CONSOLE_FORMAT = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+    FILE_FORMAT = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
+    
+    # 添加控制台处理器，使用更简洁的格式，只显示重要信息
     logger.add(
         sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-        level="INFO",
+        format=CONSOLE_FORMAT,
+        level="INFO",  # 控制台使用INFO级别
         colorize=True,
+        filter=lambda record: (
+            # 排除详细的过程日志
+            not any(keyword in record["message"].lower() for keyword in [
+                "request was redirected",
+                "making request",
+                "processing batch",
+                "created database session",
+                "prefix dict",
+                "loading model",
+                "building prefix dict",
+                "loading model from cache",
+                "loading model cost",
+                "prefix dict has been built",
+                "taskscheduler initialized"
+            ]) and
+            # 保留重要的系统状态和任务信息
+            (record["level"].no >= logger.level("INFO").no and
+             (any(keyword in record["message"] for keyword in [
+                 "启动",
+                 "停止",
+                 "错误",
+                 "失败",
+                 "完成",
+                 "初始化完成",
+                 "计划任务",
+                 "注册任务"
+             ]) or
+              # 显示任务调度器的重要信息
+              (record["name"].startswith("app.core.scheduler") and
+               any(keyword in record["message"].lower() for keyword in [
+                   "task scheduler",
+                   "registered",
+                   "started",
+                   "completed"
+               ])) or
+              # 显示任务执行的重要信息
+              (record["name"].startswith("app.core.tasks") and
+               any(keyword in record["message"] for keyword in [
+                   "开始执行",
+                   "完成",
+                   "更新完成",
+                   "已更新"
+               ]))
+             ))
+        )
     )
     
-    # 添加文件处理器
-    log_file = os.path.join(settings.LOG_DIR, f"{settings.APP_NAME.lower()}.log")
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    
+    # 主应用日志文件 - 包含所有日志
+    app_log_file = os.path.join(settings.LOG_DIR, "app.log")
     logger.add(
-        log_file,
+        app_log_file,
         rotation="10 MB",
         retention="1 week",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
-        level="INFO",
+        format=FILE_FORMAT,
+        level="INFO"
     )
     
-    # 为任务模块设置单独的日志级别（确保任务执行信息始终可见）
-    # 添加任务专用的日志处理器，即使在非调试模式也显示任务执行情况
-    if not settings.DEBUG:
-        logger.add(
-            sys.stderr,
-            format="<yellow>任务</yellow> | <green>{time:HH:mm:ss}</green> | <level>{message}</level>",
-            level="INFO",
-            colorize=True,
-            filter=lambda record: (
-                record["name"].startswith("app.core.tasks") or 
-                record["name"].startswith("app.core.scheduler") or
-                "定时任务" in record["message"]
-            )
+    # API请求日志文件
+    api_log_file = os.path.join(settings.LOG_DIR, "api.log")
+    logger.add(
+        api_log_file,
+        rotation="10 MB",
+        retention="1 week",
+        format=FILE_FORMAT,
+        level="DEBUG",
+        filter=lambda record: (
+            record["name"].startswith("app.services.heatlink_client") or
+            "request" in record["message"].lower()
         )
+    )
     
-    # 配置SQLAlchemy的日志过滤
-    sql_logger = logging.getLogger("sqlalchemy.engine")
+    # 调度器日志文件
+    scheduler_log_file = os.path.join(settings.LOG_DIR, "scheduler.log")
+    logger.add(
+        scheduler_log_file,
+        rotation="10 MB",
+        retention="1 week",
+        format=FILE_FORMAT,
+        level="DEBUG",
+        filter=lambda record: (
+            record["name"].startswith("app.core.scheduler") or
+            record["name"].startswith("app.core.tasks") or
+            "计划任务" in record["message"] or
+            "task scheduler" in record["message"].lower()
+        )
+    )
     
-    # 移除所有现有处理器
-    for handler in sql_logger.handlers[:]:
-        sql_logger.removeHandler(handler)
+    # 任务执行日志文件
+    task_log_file = os.path.join(settings.LOG_DIR, "tasks.log")
+    logger.add(
+        task_log_file,
+        rotation="10 MB",
+        retention="1 week",
+        format=FILE_FORMAT,
+        level="INFO",
+        filter=lambda record: (
+            "计划任务" in record["message"] or
+            record["extra"].get("task", False) or
+            record["name"].startswith("app.services.news_heat_score_service")
+        )
+    )
     
-    # 添加自定义过滤器
-    sql_filter = AdvancedSQLAlchemyFilter()
+    # 错误日志文件
+    error_log_file = os.path.join(settings.LOG_DIR, "error.log")
+    logger.add(
+        error_log_file,
+        rotation="10 MB",
+        retention="1 month",  # 错误日志保留更长时间
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | ERROR | {message}\n{exception}",
+        level="ERROR",
+        backtrace=True,
+        diagnose=True
+    )
     
-    # 设置SQLAlchemy日志级别
-    if settings.DEBUG:
-        # 在调试模式下显示SQL语句，但使用增强的过滤
-        sql_logger.setLevel(logging.INFO)
-        
-        # 配置SQL日志处理器
-        sql_handler = logging.StreamHandler()
-        sql_handler.setFormatter(logging.Formatter("SQL | {levelname} | {message}", style="{"))
-        sql_handler.addFilter(sql_filter)
-        sql_logger.addHandler(sql_handler)
-    else:
-        # 在非调试模式下，只记录警告和错误
-        sql_logger.setLevel(logging.WARNING)
-    
-    # 配置其他库的日志级别
-    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"]:
-        logging_logger = logging.getLogger(logger_name)
-        # 移除所有现有处理器
-        for handler in logging_logger.handlers[:]:
-            logging_logger.removeHandler(handler)
-        # 添加拦截处理器
-        logging_logger.addHandler(InterceptHandler())
-        logging_logger.propagate = False
-    
-    # 配置第三方库的日志级别
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    
-    # Log when logging has been set up
     logger.info("日志系统已配置完成") 

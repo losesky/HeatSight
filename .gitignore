@@ -9,6 +9,8 @@ dist/
 build/
 .next/
 out/
+backend/nltk_data/
+backend/tests/
 
 # Environment variables
 .env

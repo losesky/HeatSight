@@ -29,6 +29,8 @@ class TaskScheduler:
         @app.on_event("shutdown")
         async def shutdown_scheduler():
             await self.stop()
+        
+        logger.info("⚡ 任务调度器设置完成")
     
     async def start(self):
         """Start the scheduler."""
@@ -36,11 +38,21 @@ class TaskScheduler:
             return
         
         self.is_running = True
-        logger.info("Starting task scheduler")
+        logger.info("🚀 启动任务调度器")
         
         # Start all registered tasks
+        task_count = len(self.tasks)
+        if task_count > 0:
+            logger.info(f"📋 发现 {task_count} 个待启动任务")
+        
         for task_id, task_info in self.tasks.items():
-            self._start_task(task_id, task_info)
+            try:
+                self._start_task(task_id, task_info)
+                logger.info(f"✅ 任务启动成功: {task_id}")
+            except Exception as e:
+                logger.error(f"❌ 任务启动失败 [{task_id}]: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
     
     async def stop(self):
         """Stop the scheduler."""
@@ -48,13 +60,20 @@ class TaskScheduler:
             return
         
         self.is_running = False
-        logger.info("Stopping task scheduler")
+        logger.info("🛑 停止任务调度器")
         
         # Cancel all running tasks
+        task_count = len(self.tasks)
+        if task_count > 0:
+            logger.info(f"📋 发现 {task_count} 个运行中的任务")
+        
         for task_id, task_info in self.tasks.items():
             if "task" in task_info and task_info["task"] is not None:
-                logger.debug(f"Cancelling task: {task_id}")
-                task_info["task"].cancel()
+                try:
+                    task_info["task"].cancel()
+                    logger.info(f"✅ 任务已停止: {task_id}")
+                except Exception as e:
+                    logger.error(f"❌ 任务停止失败 [{task_id}]: {str(e)}")
     
     def _start_task(self, task_id: str, task_info: Dict[str, Any]):
         """Start a single task."""
@@ -62,7 +81,7 @@ class TaskScheduler:
             while self.is_running:
                 try:
                     start_time = time.time()
-                    logger.info(f"[计划任务] 开始执行: {task_id}")
+                    logger.info(f"▶️ 开始执行任务: {task_id}")
                     
                     success = True
                     error_msg = None
@@ -77,12 +96,10 @@ class TaskScheduler:
                                 await task_info["func"]()
                                 
                             # 如果任务成功执行而没有显式提交事务，我们在这里提交
-                            # 这只是一个额外的保险，理想情况下任务应该自己管理事务
                             if task_info.get("auto_commit", True) and task_info.get("with_session", True):
                                 if not session.is_active:
-                                    logger.debug(f"任务 {task_id} 会话已关闭，无需提交")
+                                    logger.debug(f"会话已关闭，跳过提交 [{task_id}]")
                                 else:
-                                    logger.debug(f"为任务 {task_id} 自动提交事务")
                                     await session.commit()
                                     
                         except Exception as e:
@@ -91,32 +108,36 @@ class TaskScheduler:
                             # 在出现异常时回滚会话
                             if task_info.get("with_session", True) and session.is_active:
                                 await session.rollback()
-                                logger.warning(f"任务 {task_id} 出错，已回滚事务")
-                            # 重新抛出异常以便记录
+                                logger.warning(f"❌ 任务执行出错，已回滚事务 [{task_id}]")
                             raise
                     
                     # 任务完成后记录
                     duration = time.time() - start_time
                     if success:
-                        logger.info(f"[计划任务] 完成: {task_id} (耗时: {duration:.2f}秒)")
+                        logger.info(f"✅ 任务执行完成 [{task_id}] - 耗时: {duration:.2f}秒")
                     else:
-                        logger.error(f"[计划任务] 失败: {task_id} - {error_msg}")
+                        logger.error(f"❌ 任务执行失败 [{task_id}] - {error_msg}")
                         
                 except asyncio.CancelledError:
-                    logger.info(f"[计划任务] 已取消: {task_id}")
+                    logger.info(f"🛑 任务已取消: {task_id}")
                     break
                 except Exception as e:
-                    logger.error(f"[计划任务] 执行出错 {task_id}: {e}")
+                    logger.error(f"❌ 任务执行出错 [{task_id}]: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
                 
                 # Sleep until next execution
                 next_run = datetime.now() + timedelta(seconds=task_info["interval"])
-                logger.info(f"[计划任务] {task_id} 下次执行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-                await asyncio.sleep(task_info["interval"])
+                logger.info(f"⏰ 下次执行时间 [{task_id}]: {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
+                try:
+                    await asyncio.sleep(task_info["interval"])
+                except asyncio.CancelledError:
+                    logger.debug(f"任务休眠被中断 [{task_id}]")
+                    break
         
         # Create and store the task
-        task = asyncio.create_task(task_wrapper())
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(task_wrapper())
         self.tasks[task_id]["task"] = task
     
     def add_task(
@@ -127,17 +148,8 @@ class TaskScheduler:
         with_session: bool = True,
         auto_commit: bool = True
     ):
-        """Add a new task to the scheduler.
-        
-        Args:
-            task_id: Unique identifier for the task
-            func: Async function to call
-            interval: Time between executions in seconds
-            with_session: Whether to provide a DB session to the function
-            auto_commit: Whether to automatically commit the session after task completes
-        """
+        """Add a new task to the scheduler."""
         if task_id in self.tasks:
-            logger.warning(f"Task with ID {task_id} already exists, replacing")
             if self.is_running and "task" in self.tasks[task_id]:
                 self.tasks[task_id]["task"].cancel()
         
@@ -149,7 +161,7 @@ class TaskScheduler:
             "task": None,
         }
         
-        logger.info(f"Task added: {task_id} (interval: {interval}s, auto_commit: {auto_commit})")
+        logger.info(f"📝 任务已注册 [{task_id}] - 执行间隔: {interval}秒")
         
         # If scheduler is already running, start the task immediately
         if self.is_running:
