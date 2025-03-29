@@ -11,6 +11,7 @@ import asyncio
 import sys
 from datetime import datetime
 import json
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -24,6 +25,9 @@ async def run_heat_score_update():
     """运行一次完整的热度计算流程"""
     # 设置日志系统
     setup_logging()
+    
+    # 设置 SQLAlchemy 日志级别为 WARNING，减少 SQL 日志输出
+    logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
     
     # 使用明显的标记，确保在非调试模式下也能看到
     print("\n" + "="*60)

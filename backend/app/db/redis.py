@@ -1,13 +1,7 @@
 import json
-import logging
 from typing import Any, Dict, Optional, Union
 
-# 基本日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("redis_manager")
+from loguru import logger
 
 try:
     import aioredis
@@ -93,7 +87,6 @@ class RedisManager:
             return
 
         try:
-            # 使用异步Redis客户端
             self.redis_client = aioredis.from_url(
                 self.redis_url,
                 encoding="utf-8",

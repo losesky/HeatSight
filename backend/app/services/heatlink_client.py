@@ -1,4 +1,5 @@
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import unquote
 
 import httpx
 from fastapi import HTTPException
@@ -87,8 +88,12 @@ class HeatLinkAPIClient:
                 
                 # 检查是否发生重定向，记录日志
                 if response.history:
-                    redirects = [f"{r.status_code}: {r.url} -> {r.headers.get('location', 'unknown')}" for r in response.history]
-                    logger.info(f"Request was redirected: {' -> '.join(redirects)} (final: {response.url})")
+                    original_url = unquote(str(response.history[0].url))
+                    final_url = unquote(str(response.url))
+                    logger.info(
+                        f"Request was redirected: {response.history[0].status_code}: "
+                        f"{original_url} -> {final_url}"
+                    )
                 
                 # Raise exception for 4xx/5xx responses
                 response.raise_for_status()
