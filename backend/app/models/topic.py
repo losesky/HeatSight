@@ -18,7 +18,7 @@ class Topic(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
     summary = Column(Text, nullable=True)
-    source_name = Column(String(100), nullable=True)
+    source_id = Column(Integer, nullable=False)
     category = Column(String(50), nullable=True)
     published_at = Column(DateTime, default=datetime.utcnow)
     url = Column(String(512), nullable=True)
@@ -37,7 +37,7 @@ class Topic(Base):
             "id": self.id,
             "title": self.title,
             "summary": self.summary,
-            "source_name": self.source_name,
+            "source_id": self.source_id,
             "category": self.category,
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "url": self.url,

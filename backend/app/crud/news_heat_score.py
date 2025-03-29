@@ -82,23 +82,51 @@ async def get_multi_by_news_ids(
 ) -> Dict[str, NewsHeatScore]:
     """Get heat scores for multiple news items."""
     try:
-        query = (
-            select(NewsHeatScore)
-            .where(NewsHeatScore.news_id.in_(news_ids))
-            .order_by(desc(NewsHeatScore.calculated_at))
-        )
-        result = await db.execute(query)
+        # 如果ID数量太多，使用分批处理以避免SQL查询过长
+        BATCH_SIZE = 100
+        all_scores = {}
         
-        # Create a dictionary of news_id -> heat_score
-        scores = {}
+        # 当ID数量超过批处理大小时，分批处理
+        if len(news_ids) > BATCH_SIZE:
+            logger.debug(f"批量获取热度评分，共 {len(news_ids)} 条，分批处理")
+            
+            for i in range(0, len(news_ids), BATCH_SIZE):
+                batch_ids = news_ids[i:i+BATCH_SIZE]
+                logger.debug(f"处理第 {i//BATCH_SIZE + 1} 批，包含 {len(batch_ids)} 条记录")
+                
+                query = (
+                    select(NewsHeatScore)
+                    .where(NewsHeatScore.news_id.in_(batch_ids))
+                    .order_by(desc(NewsHeatScore.calculated_at))
+                )
+                result = await db.execute(query)
+                
+                # 处理这一批结果
+                scalar_result = result.scalars()
+                for row in scalar_result:
+                    if row.news_id not in all_scores:
+                        all_scores[row.news_id] = row
+                
+                logger.debug(f"第 {i//BATCH_SIZE + 1} 批处理完成，累计获取 {len(all_scores)} 条记录")
+        else:
+            # 当ID数量较少时，一次性处理
+            logger.debug(f"批量获取热度评分，共 {len(news_ids)} 条")
+            query = (
+                select(NewsHeatScore)
+                .where(NewsHeatScore.news_id.in_(news_ids))
+                .order_by(desc(NewsHeatScore.calculated_at))
+            )
+            result = await db.execute(query)
+            
+            # 处理结果
+            scalar_result = result.scalars()
+            for row in scalar_result:
+                if row.news_id not in all_scores:
+                    all_scores[row.news_id] = row
+            
+            logger.debug(f"热度评分获取完成，共获取 {len(all_scores)} 条记录")
         
-        # 使用同步方式处理结果集
-        scalar_result = result.scalars()
-        for row in scalar_result:
-            if row.news_id not in scores:
-                scores[row.news_id] = row
-        
-        return scores
+        return all_scores
     except Exception as e:
         logger.error(f"批量获取热度评分失败: {str(e)}")
         import traceback

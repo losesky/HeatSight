@@ -1,5 +1,5 @@
 -- 示例主题数据
-INSERT INTO topics (title, summary, source_name, category, url, image_url, heat, extra)
+INSERT INTO topics (title, summary, source_id, category, url, image_url, heat, extra)
 VALUES
     ('元宇宙发展现状与未来趋势', 'Facebook更名为Meta后，元宇宙概念持续升温，各大科技巨头争相布局。', '科技日报', '科技', 'https://example.com/news/1', 'https://via.placeholder.com/300x200?text=元宇宙', 98, '{"likes": 1205, "comments": 368}'),
     ('数字人民币试点扩大到更多城市', '数字人民币试点范围进一步扩大，新增多个省份的主要城市。', '金融时报', '财经', 'https://example.com/news/2', 'https://via.placeholder.com/300x200?text=数字人民币', 92, '{"likes": 845, "comments": 226}'),

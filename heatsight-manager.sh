@@ -168,7 +168,7 @@ app_menu() {
                 ps aux | grep -E 'node.*simple-server.js|node.*start' | grep -v grep
                 echo
                 echo -e "${CYAN}Python服务:${NC}"
-                ps aux | grep -E 'python.*run.py|uvicorn' | grep -v grep
+                ps aux | grep -E 'python.*main.py|uvicorn' | grep -v grep
                 echo
                 echo -e "${YELLOW}按任意键继续...${NC}"
                 read -r

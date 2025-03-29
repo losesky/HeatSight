@@ -6,7 +6,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
 // Update API URL to use the correct HeatLink endpoint
-const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 const POPULAR_SOURCES = ['zhihu', 'weibo', 'bilibili', 'baidu', 'toutiao'];
 const DISPLAY_COUNT = 3; // Number of news items to display per source
 
@@ -141,7 +141,7 @@ const Home = () => {
                         
                         <div className="flex items-center space-x-3 text-sm text-gray-500">
                           <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-full text-xs">
-                            {item.source_name}
+                            {item.source_id}
                           </span>
                           
                           {item.extra?.metrics && (

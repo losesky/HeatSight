@@ -392,7 +392,7 @@ const getDisplayedNews = () => {
     if (sourceData && sourceData.news) {
       allNews = [...allNews, ...sourceData.news.map(item => ({
         ...item,
-        source_name: source.name,
+        source_id: source.source_id,
         category: source.category
       }))];
     }
@@ -516,9 +516,9 @@ NewsHeatScore 系统通过客观、多维度的热度评估，解决了以下问
 ## 开发注意事项
 
 1. **HeatLink API 接口使用说明**：
-   - `/external/hot` 和 `/unified-news` 是伪接口，不会返回实际数据
-   - 必须通过 `/external/sources` 获取所有新闻源列表
-   - 然后通过 `/external/source/{source_id}` 获取每个源的具体新闻
+   - `/heatlink/hot` 和 `/unified-news` 是伪接口，不会返回实际数据
+   - 必须通过 `/heatlink/sources` 获取所有新闻源列表
+   - 然后通过 `/heatlink/source/{source_id}` 获取每个源的具体新闻
    - 使用 `/api/news/` 接口进行关键词搜索确定相似新闻
 
 2. **热度计算数据流**：

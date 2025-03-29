@@ -301,13 +301,17 @@ class NewsHeatScoreService:
     ) -> Dict[str, float]:
         """获取多个新闻的热度分数"""
         # 尝试从缓存获取
-        cache_key = f"{CACHE_PREFIX}:bulk:{','.join(sorted(news_ids))}"
+        # 不再使用整个ID列表构建缓存键，而是使用长度
+        ids_count = len(news_ids)
+        cache_key = f"{CACHE_PREFIX}:bulk:{uuid.uuid4().hex[:8]}:{ids_count}"
+        
         cached_data = await redis_manager.get(cache_key)
         if cached_data:
-            logger.debug(f"从缓存获取热度分数: {len(cached_data)} 条")
+            logger.debug(f"从缓存获取热度分数: {ids_count} 条")
             return cached_data
         
         # 从数据库获取
+        logger.debug(f"从数据库获取热度分数，请求 {ids_count} 条记录")
         scores_map = await news_heat_score.get_multi_by_news_ids(session, news_ids)
         
         # 转换为所需格式
@@ -320,6 +324,7 @@ class NewsHeatScoreService:
         
         # 缓存结果
         await redis_manager.set(cache_key, result, expire=CACHE_TTL)
+        logger.debug(f"已完成热度分数查询，返回 {len(result)} 条结果")
         
         return result
 
@@ -328,13 +333,16 @@ class NewsHeatScoreService:
     ) -> Dict[str, Any]:
         """获取多个新闻的详细热度数据"""
         # 尝试从缓存获取
-        cache_key = f"{CACHE_PREFIX}:detailed:{','.join(sorted(news_ids))}"
+        ids_count = len(news_ids)
+        cache_key = f"{CACHE_PREFIX}:detailed:{uuid.uuid4().hex[:8]}:{ids_count}"
+        
         cached_data = await redis_manager.get(cache_key)
         if cached_data:
-            logger.debug(f"从缓存获取详细热度数据: {len(cached_data)} 条")
+            logger.debug(f"从缓存获取详细热度数据: {ids_count} 条")
             return cached_data
         
         # 从数据库获取
+        logger.debug(f"从数据库获取详细热度数据，请求 {ids_count} 条记录")
         scores_map = await news_heat_score.get_multi_by_news_ids(session, news_ids)
         
         # 转换为所需格式
@@ -345,6 +353,7 @@ class NewsHeatScoreService:
         
         # 缓存结果
         await redis_manager.set(cache_key, result, expire=CACHE_TTL)
+        logger.debug(f"已完成详细热度数据查询，返回 {len(result)} 条结果")
         
         return result
 

@@ -11,7 +11,7 @@ class TopicBase(BaseModel):
     """Base schema for Topic."""
     title: str
     summary: Optional[str] = None
-    source_name: Optional[str] = None
+    source_id: Optional[str] = None
     category: Optional[str] = None
     url: Optional[str] = None
     image_url: Optional[str] = None
@@ -28,7 +28,7 @@ class TopicUpdate(BaseModel):
     """Schema for updating a Topic."""
     title: Optional[str] = None
     summary: Optional[str] = None
-    source_name: Optional[str] = None
+    source_id: Optional[str] = None
     category: Optional[str] = None
     published_at: Optional[datetime] = None
     url: Optional[str] = None

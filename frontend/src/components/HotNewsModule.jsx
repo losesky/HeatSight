@@ -6,20 +6,20 @@ import {
   FiClock, 
   FiArrowLeft,
   FiEye,
-  FiMessageCircle,
-  FiLink,
   FiShare2,
   FiInfo,
   FiBookmark,
-  FiBarChart2
+  FiBarChart2,
+  FiStar
 } from 'react-icons/fi';
 import axios from 'axios';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { Link } from 'react-router-dom';
+import { newsHeatApi } from '../api/api'; // Import the newsHeatApi service
 
 // Update API URL to use the correct HeatLink endpoint
-const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 
 const HotNewsModule = ({ initialSourceId }) => {
   const [sources, setSources] = useState([]);
@@ -30,6 +30,7 @@ const HotNewsModule = ({ initialSourceId }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState('ranking'); // 'ranking' or 'details'
   const [selectedItem, setSelectedItem] = useState(null);
+  const [newsHeatMap, setNewsHeatMap] = useState({}); // Add newsHeatMap state
 
   // Define fetchSourceData with useCallback
   const fetchSourceData = useCallback(async (sourceId) => {
@@ -101,6 +102,29 @@ const HotNewsModule = ({ initialSourceId }) => {
     }
   }, [selectedSource, fetchSourceData]);
 
+  // When source data is loaded, fetch heat scores
+  useEffect(() => {
+    if (sourceData && sourceData.news && sourceData.news.length > 0) {
+      const fetchHeatScores = async () => {
+        try {
+          // Get all news IDs from the source data
+          const newsIds = sourceData.news.map(item => item.id);
+          
+          // Fetch heat scores from the API
+          const response = await newsHeatApi.getHeatScores(newsIds);
+          if (response && response.heat_scores) {
+            setNewsHeatMap(response.heat_scores);
+            console.log(`从API获取了${Object.keys(response.heat_scores).length}条热度数据`);
+          }
+        } catch (error) {
+          console.error('获取热度分数失败:', error);
+        }
+      };
+      
+      fetchHeatScores();
+    }
+  }, [sourceData]);
+
   const handleRefresh = async () => {
     if (!selectedSource) return;
     
@@ -150,17 +174,6 @@ const HotNewsModule = ({ initialSourceId }) => {
     return categoryNames[categoryKey] || categoryKey;
   };
 
-  // Get a different icon for news types
-  const getNewsTypeIcon = (index) => {
-    const icons = [
-      <FiTrendingUp className="mr-1 text-red-500" />,
-      <FiEye className="mr-1 text-blue-500" />,
-      <FiMessageCircle className="mr-1 text-green-500" />,
-      <FiLink className="mr-1 text-purple-500" />
-    ];
-    return icons[index % icons.length];
-  };
-
   // Get source color
   const getSourceColor = (sourceId) => {
     const colors = {
@@ -183,6 +196,31 @@ const HotNewsModule = ({ initialSourceId }) => {
         {name?.substring(0, 1) || sourceId?.substring(0, 1)?.toUpperCase() || '?'}
       </div>
     );
+  };
+
+  // Get heat score for a news item
+  const getNewsHeatScore = (newsId, defaultScore = 10) => {
+    const score = newsHeatMap[newsId];
+    return score !== undefined ? score : defaultScore;
+  };
+
+  // Get heat level text based on score
+  const getHeatLevelText = (score) => {
+    if (score >= 90) return '爆热';
+    if (score >= 70) return '高热';
+    if (score >= 50) return '热门';
+    if (score >= 30) return '一般';
+    if (score > 0) return '冷门';
+    return ''; // 对于热度为0的不返回文字
+  };
+
+  // Get heat color class based on score
+  const getHeatColorClass = (score) => {
+    if (score >= 90) return 'text-red-600';
+    if (score >= 70) return 'text-orange-500';
+    if (score >= 50) return 'text-yellow-500';
+    if (score >= 30) return 'text-blue-500';
+    return 'text-gray-500';
   };
 
   if (loading && !sourceData) {
@@ -261,16 +299,16 @@ const HotNewsModule = ({ initialSourceId }) => {
                 </span>
               )}
               
-              {selectedItem.extra?.metrics && (
-                <span className="flex items-center text-sm text-gray-500">
-                  <FiTrendingUp className="mr-1.5 text-red-500" />
-                  热度: {selectedItem.extra.metrics}
-                </span>
-              )}
-              
               <span className="flex items-center text-sm text-gray-500">
                 <FiEye className="mr-1.5 text-blue-500" />
                 浏览: {Math.floor(Math.random() * 90000) + 10000}
+              </span>
+              
+              {/* Add real heat score display */}
+              <span className={`flex items-center text-sm ${getHeatColorClass(getNewsHeatScore(selectedItem.id))}`}>
+                <FiStar className="mr-1.5" />
+                热度 {Math.round(getNewsHeatScore(selectedItem.id))}
+                {getHeatLevelText(getNewsHeatScore(selectedItem.id)) && ` (${getHeatLevelText(getNewsHeatScore(selectedItem.id))})`}
               </span>
             </div>
             
@@ -354,9 +392,9 @@ const HotNewsModule = ({ initialSourceId }) => {
                       </h4>
                       
                       <div className="flex items-center text-xs text-gray-500">
-                        <span className="flex items-center mr-3">
-                          <FiTrendingUp className="mr-1 text-red-500" />
-                          {item.extra?.metrics || "热度"}
+                        <span className={`flex items-center mr-3 ${getHeatColorClass(getNewsHeatScore(item.id))}`}>
+                          <FiStar className="mr-1" />
+                          热度 {Math.round(getNewsHeatScore(item.id))}
                         </span>
                         
                         {item.published_at && (
@@ -520,16 +558,10 @@ const HotNewsModule = ({ initialSourceId }) => {
                             </span>
                           )}
                           
-                          {item.extra?.metrics && (
-                            <span className="flex items-center">
-                              <FiTrendingUp className="mr-1 text-red-500" />
-                              热度 {item.extra.metrics}
-                            </span>
-                          )}
-
-                          <span className="flex items-center">
-                            {getNewsTypeIcon(index)}
-                            {Math.floor(Math.random() * 9000) + 1000}
+                          <span className={`flex items-center ${getHeatColorClass(getNewsHeatScore(item.id))}`}>
+                            <FiStar className="mr-1" />
+                            热度 {Math.round(getNewsHeatScore(item.id))}
+                            {getHeatLevelText(getNewsHeatScore(item.id)) && ` (${getHeatLevelText(getNewsHeatScore(item.id))})`}
                           </span>
                           
                           <a 

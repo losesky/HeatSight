@@ -44,7 +44,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "元宇宙发展现状与未来趋势",
             "summary": "Facebook更名为Meta后，元宇宙概念持续升温，各大科技巨头争相布局。",
-            "source_name": "科技日报",
+            "source_id": "科技日报",
             "category": "科技",
             "published_at": datetime.now(),
             "url": "https://example.com/news/1",
@@ -55,7 +55,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "数字人民币试点扩大到更多城市",
             "summary": "数字人民币试点范围进一步扩大，新增多个省份的主要城市。",
-            "source_name": "金融时报",
+            "source_id": "金融时报",
             "category": "财经",
             "published_at": datetime.now(),
             "url": "https://example.com/news/2",
@@ -66,7 +66,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "新能源汽车销量创历史新高",
             "summary": "今年以来，我国新能源汽车销量持续攀升，市场渗透率进一步提高。",
-            "source_name": "汽车周刊",
+            "source_id": "汽车周刊",
             "category": "汽车",
             "published_at": datetime.now(),
             "url": "https://example.com/news/3",
@@ -77,7 +77,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "AI绘画引发版权争议",
             "summary": "人工智能绘画工具的兴起引发了关于艺术创作版权归属的广泛争议。",
-            "source_name": "数字文化报",
+            "source_id": "数字文化报",
             "category": "文化",
             "published_at": datetime.now(),
             "url": "https://example.com/news/4",
@@ -88,7 +88,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "芯片短缺问题持续影响全球供应链",
             "summary": "全球芯片短缺情况虽有所缓解，但仍影响多个行业生产和供应。",
-            "source_name": "半导体周刊",
+            "source_id": "半导体周刊",
             "category": "科技",
             "published_at": datetime.now(),
             "url": "https://example.com/news/8",
@@ -99,7 +99,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "在线教育行业进入深度调整期",
             "summary": "双减政策一年后，在线教育企业纷纷转型，行业生态重构。",
-            "source_name": "教育时报",
+            "source_id": "教育时报",
             "category": "教育",
             "published_at": datetime.now(),
             "url": "https://example.com/news/7",
@@ -110,7 +110,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "碳达峰碳中和政策推进情况分析",
             "summary": "各地积极推进碳达峰碳中和相关政策，能源结构持续优化。",
-            "source_name": "能源评论",
+            "source_id": "能源评论",
             "category": "环保",
             "published_at": datetime.now(),
             "url": "https://example.com/news/6",
@@ -121,7 +121,7 @@ def create_default_topics(db: Session) -> None:
         {
             "title": "直播电商新规出台",
             "summary": "新规要求直播带货需更加规范透明，明确标示商品信息和促销规则。",
-            "source_name": "电商日报",
+            "source_id": "电商日报",
             "category": "电商",
             "published_at": datetime.now(),
             "url": "https://example.com/news/5",
@@ -142,7 +142,7 @@ def create_default_topics(db: Session) -> None:
         topic_in = schemas.TopicCreate(
             title=topic_data["title"],
             summary=topic_data["summary"],
-            source_name=topic_data["source_name"],
+            source_id=topic_data["source_id"],
             category=topic_data["category"],
             published_at=topic_data["published_at"],
             url=topic_data["url"],

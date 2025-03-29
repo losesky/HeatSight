@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   FiExternalLink, 
-  FiTrendingUp, 
   FiRefreshCw, 
   FiClock, 
   FiSearch,
@@ -13,9 +12,10 @@ import axios from 'axios';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { SourceCardSkeleton } from './SkeletonLoader';
+import { newsHeatApi } from '../api/api'; // Import the newsHeatApi service
 
 // Update API URL to use the correct HeatLink endpoint
-const API_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
 
 // 缓存keys
 const CACHE_KEYS = {
@@ -236,6 +236,51 @@ const HotRankings = () => {
     };
   }, []); // 空依赖数组，只在组件挂载时执行一次
 
+  // 在数据加载完成后获取热度分数
+  useEffect(() => {
+    // 只有当数据加载完成且不在刷新状态时才获取热度分数
+    if (Object.keys(sourceDataMap).length > 0 && !loading && !refreshing) {
+      // 收集所有新闻ID
+      const allNewsIds = [];
+      Object.values(sourceDataMap).forEach(sourceData => {
+        if (sourceData.news && Array.isArray(sourceData.news)) {
+          sourceData.news.forEach(item => {
+            if (item.id) {
+              allNewsIds.push(item.id);
+            }
+          });
+        }
+      });
+
+      // 如果有新闻ID，获取热度分数
+      if (allNewsIds.length > 0) {
+        const fetchHeatScores = async () => {
+          try {
+            const response = await newsHeatApi.getHeatScores(allNewsIds);
+            if (response && response.heat_scores) {
+              setNewsHeatMap(response.heat_scores);
+              console.log(`从API获取了${Object.keys(response.heat_scores).length}条热度数据`);
+            }
+          } catch (error) {
+            console.error('获取热度分数失败:', error);
+            // 如果API调用失败，使用缓存中的热度数据
+            try {
+              const cachedHeatMap = localStorage.getItem(CACHE_KEYS.NEWS_HEAT_DATA);
+              if (cachedHeatMap) {
+                console.log('使用缓存的热度数据');
+                setNewsHeatMap(JSON.parse(cachedHeatMap));
+              }
+            } catch (err) {
+              console.error('读取缓存热度数据失败:', err);
+            }
+          }
+        };
+
+        fetchHeatScores();
+      }
+    }
+  }, [sourceDataMap, loading, refreshing]);
+
   // 手动刷新函数
   const handleRefresh = () => {
     if (loading || refreshing) return;
@@ -452,159 +497,11 @@ const HotRankings = () => {
     return loadingSources.has(sourceId);
   };
 
-  // 新增：计算所有新闻线索的热度分数（在所有新闻源中出现的频率）
-  const calculateNewsHeat = useMemo(() => {
-    if (Object.keys(sourceDataMap).length === 0) {
-      return {};
-    }
-
-    console.log('计算热度分数...');
-    
-    // 1. 收集所有新闻
-    const allNews = [];
-    Object.values(sourceDataMap).forEach(sourceData => {
-      if (sourceData.news && Array.isArray(sourceData.news)) {
-        allNews.push(...sourceData.news);
-      }
-    });
-    
-    // 2. 对标题进行分词和处理（简单实现，仅示例）
-    const processTitle = (title) => {
-      return title
-        .toLowerCase()
-        .replace(/[^\w\s\u4e00-\u9fff]/g, '') // 保留中文字符和英文字母数字
-        .trim();
-    };
-    
-    // 3. 创建标题关键词映射
-    const titleKeywords = {};
-    allNews.forEach(news => {
-      if (news.title) {
-        const processedTitle = processTitle(news.title);
-        if (!titleKeywords[processedTitle]) {
-          titleKeywords[processedTitle] = {
-            newsId: news.id,
-            count: 1, // 出现次数
-            sources: new Set([news.source_id]), // 在哪些源中出现
-          };
-        } else {
-          titleKeywords[processedTitle].count += 1;
-          titleKeywords[processedTitle].sources.add(news.source_id);
-        }
-      }
-    });
-    
-    // 4. 计算相似性和聚类（简化版，仅用于演示）
-    // 在实际应用中，这里可以使用更复杂的算法，如余弦相似度、Jaccard相似系数等
-    const similarity = (title1, title2) => {
-      // 简单判断：如果两个标题有80%以上的相似，视为相同新闻
-      const longer = title1.length >= title2.length ? title1 : title2;
-      const shorter = title1.length >= title2.length ? title2 : title1;
-      
-      if (shorter.length === 0) return 0;
-      
-      // 检查一个字符串是否是另一个字符串的子串
-      if (longer.includes(shorter)) return 1;
-      
-      // 简单计算部分匹配
-      let matches = 0;
-      const words1 = longer.split(/\s+/);
-      const words2 = shorter.split(/\s+/);
-      
-      words2.forEach(word => {
-        if (words1.includes(word)) matches++;
-      });
-      
-      return matches / words2.length;
-    };
-    
-    // 5. 合并相似新闻
-    const processedTitles = Object.keys(titleKeywords);
-    const clusters = [];
-    
-    processedTitles.forEach(title => {
-      const item = titleKeywords[title];
-      
-      // 查找是否已有相似的标题簇
-      let foundCluster = false;
-      for (const cluster of clusters) {
-        if (similarity(cluster.title, title) > 0.8) {
-          // 合并到现有簇
-          cluster.count += item.count;
-          item.sources.forEach(source => cluster.sources.add(source));
-          cluster.newsIds.push(item.newsId);
-          foundCluster = true;
-          break;
-        }
-      }
-      
-      if (!foundCluster) {
-        // 创建新簇
-        clusters.push({
-          title: title,
-          count: item.count,
-          sources: item.sources,
-          newsIds: [item.newsId],
-        });
-      }
-    });
-    
-    // 6. 计算最终热度分数
-    const heatScores = {};
-    const maxPossibleSources = sources.length; // 理论上最多可以出现在所有源中
-    
-    clusters.forEach(cluster => {
-      const sourceCount = cluster.sources.size;
-      const repeatCount = cluster.count;
-      
-      // 热度计算：(出现源数 / 总源数) * 70 + (重复次数 / 总源数) * 30
-      // 结果是0-100的分数，但我们设置最小为10，给结果加上一些随机性
-      let score = Math.floor((sourceCount / maxPossibleSources) * 70 + 
-                   (repeatCount / maxPossibleSources) * 30);
-      
-      // 确保分数在10-100之间
-      score = Math.max(10, Math.min(100, score));
-      
-      // 为所有相关的新闻ID设置相同的热度分数
-      cluster.newsIds.forEach(newsId => {
-        heatScores[newsId] = score;
-      });
-    });
-    
-    console.log(`计算了 ${Object.keys(heatScores).length} 个新闻热度分数`);
-    
-    // 保存到缓存
-    try {
-      localStorage.setItem(CACHE_KEYS.NEWS_HEAT_DATA, JSON.stringify(heatScores));
-    } catch (err) {
-      console.error('Error saving heat scores to cache:', err);
-    }
-    
-    return heatScores;
-  }, [sourceDataMap, sources.length]);
-  
-  // 更新热度分数
-  useEffect(() => {
-    if (Object.keys(sourceDataMap).length > 0) {
-      // 尝试从缓存加载热度数据
-      try {
-        const cachedHeatMap = localStorage.getItem(CACHE_KEYS.NEWS_HEAT_DATA);
-        if (cachedHeatMap && !isManualRefresh.current) {
-          setNewsHeatMap(JSON.parse(cachedHeatMap));
-        } else {
-          // 如果没有缓存或手动刷新，计算新的热度分数
-          setNewsHeatMap(calculateNewsHeat);
-        }
-      } catch (err) {
-        console.error('Error loading heat scores from cache:', err);
-        setNewsHeatMap(calculateNewsHeat);
-      }
-    }
-  }, [calculateNewsHeat, sourceDataMap]);
-
-  // 获取新闻热度分数
+  // 获取新闻热度分数 - 从API或回退到默认值
   const getNewsHeatScore = (newsId, defaultScore = 10) => {
-    return newsHeatMap[newsId] || defaultScore;
+    const score = newsHeatMap[newsId];
+    // 如果API没有返回热度分数，则返回默认值
+    return score !== undefined ? score : defaultScore;
   };
 
   // 获取热度等级文字描述
@@ -613,7 +510,8 @@ const HotRankings = () => {
     if (score >= 70) return '高热';
     if (score >= 50) return '热门';
     if (score >= 30) return '一般';
-    return '冷门';
+    if (score > 0) return '冷门';
+    return ''; // 对于热度为0的不返回文字
   };
 
   // 获取热度颜色类
@@ -768,16 +666,10 @@ const HotRankings = () => {
                               </span>
                             )}
                             
-                            {item.extra?.metrics && (
-                              <span className="flex items-center">
-                                <FiTrendingUp className="mr-1 text-red-500" />
-                                {item.extra.metrics}
-                              </span>
-                            )}
-                            
                             <span className={`flex items-center ${getHeatColorClass(getNewsHeatScore(item.id))}`}>
                               <FiStar className="mr-1" />
-                              热度 {getNewsHeatScore(item.id)} ({getHeatLevelText(getNewsHeatScore(item.id))})
+                              热度 {Math.round(getNewsHeatScore(item.id))}
+                              {getHeatLevelText(getNewsHeatScore(item.id)) && ` (${getHeatLevelText(getNewsHeatScore(item.id))})`}
                             </span>
                           </div>
                         </div>

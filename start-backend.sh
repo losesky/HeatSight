@@ -135,7 +135,7 @@ echo -e "${BLUE}已安装的关键依赖:${NC}"
 pip list | grep -E "pydantic|fastapi|uvicorn"
 
 # 启动服务
-python run.py --reload --workers 1
+python main.py --reload --workers 1
 
 # 脚本不应该执行到这里，因为上面的命令会持续运行
 echo -e "${RED}后端服务已停止${NC}" 

@@ -61,7 +61,7 @@ const Dashboard = () => {
                     </a>
                   </h3>
                   <div className="flex items-center text-sm text-gray-500">
-                    <span>{item.source_name}</span>
+                    <span>{item.source_id}</span>
                     <span className="mx-2">•</span>
                     <div className="flex items-center">
                       <FiClock className="mr-1" />
@@ -137,7 +137,7 @@ const Dashboard = () => {
                   {item.summary || "无描述信息"}
                 </p>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">{item.source_name}</span>
+                  <span className="text-gray-600">{item.source_id}</span>
                   <span className="flex items-center text-gray-500">
                     <FiTrendingUp className="mr-1" />
                     热度 {item.extra?.heat || "-"}

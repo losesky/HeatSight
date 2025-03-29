@@ -14,9 +14,10 @@ class Settings(BaseSettings):
     # App settings
     APP_NAME: str = "HeatSight"
     APP_VERSION: str = "0.1.0"
-    DEBUG: bool = False
+    DEBUG: bool = os.environ.get("DEBUG", "0").lower() in ("1", "true", "yes", "y", "on")
     ENVIRONMENT: str = "production"
     LOG_LEVEL: str = "INFO"
+    LOG_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
     
     # Server settings
     HOST: str = "localhost"

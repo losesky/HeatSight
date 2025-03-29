@@ -11,6 +11,110 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# 环境变量默认值
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/heatsight_dev"
+DB_HOST="localhost"
+DB_PORT="5432"
+DB_USER="postgres"
+DB_PASSWORD="postgres"
+DB_NAME="heatsight_dev"
+REDIS_URL="redis://localhost:6379/0"
+
+# 显示数据库配置摘要
+show_db_config() {
+  echo -e "${BLUE}=================================================${NC}"
+  echo -e "${CYAN}            HeatSight 数据库配置              ${NC}"
+  echo -e "${BLUE}=================================================${NC}"
+  echo -e "${YELLOW}数据库主机:${NC} ${GREEN}${DB_HOST}:${DB_PORT}${NC}"
+  echo -e "${YELLOW}数据库名称:${NC} ${GREEN}${DB_NAME}${NC}"
+  echo -e "${YELLOW}数据库用户:${NC} ${GREEN}${DB_USER}${NC}"
+  echo -e "${YELLOW}数据库驱动:${NC} ${GREEN}${DB_DRIVER:-postgresql}${NC}"
+  echo -e "${BLUE}=================================================${NC}"
+  echo
+}
+
+# 加载.env文件中的配置
+load_env_config() {
+  echo -e "${YELLOW}正在加载环境配置...${NC}"
+  
+  # 定义可能的.env文件位置
+  local ENV_FILES=(".env" "backend/.env")
+  
+  for env_file in "${ENV_FILES[@]}"; do
+    if [ -f "$env_file" ]; then
+      echo -e "${GREEN}找到环境配置文件: ${env_file}${NC}"
+      
+      # 从.env文件中提取数据库URL
+      if grep -q "DATABASE_URL" "$env_file"; then
+        # 提取DATABASE_URL
+        DATABASE_URL=$(grep "DATABASE_URL" "$env_file" | grep -v "TEST_DATABASE_URL" | cut -d '=' -f2 | tr -d ' ')
+        echo -e "${GREEN}从${env_file}加载到数据库URL: ${DATABASE_URL}${NC}"
+        
+        # 解析URL中的组件
+        if [[ $DATABASE_URL == postgresql* ]]; then
+          # 提取数据库驱动类型 (asyncpg or 普通)
+          if [[ $DATABASE_URL == *+asyncpg* ]]; then
+            DB_DRIVER="postgresql+asyncpg"
+            echo -e "${GREEN}数据库驱动: asyncpg (异步)${NC}"
+          else
+            DB_DRIVER="postgresql"
+            echo -e "${GREEN}数据库驱动: 标准PostgreSQL${NC}"
+          fi
+          
+          # 去除协议前缀和异步驱动标识
+          local DB_URL_CLEAN=${DATABASE_URL#postgresql*://}
+          
+          # 提取用户名和密码
+          DB_USER=$(echo $DB_URL_CLEAN | cut -d':' -f1)
+          local TEMP=$(echo $DB_URL_CLEAN | cut -d':' -f2-)
+          DB_PASSWORD=$(echo $TEMP | cut -d'@' -f1)
+          
+          # 提取主机和端口
+          local HOST_PORT=$(echo $TEMP | cut -d'@' -f2 | cut -d'/' -f1)
+          DB_HOST=$(echo $HOST_PORT | cut -d':' -f1)
+          if [[ $HOST_PORT == *:* ]]; then
+            DB_PORT=$(echo $HOST_PORT | cut -d':' -f2)
+          fi
+          
+          # 提取数据库名称
+          DB_NAME=$(echo $TEMP | cut -d'/' -f2 | cut -d'?' -f1)
+          
+          echo -e "${GREEN}解析数据库连接参数:${NC}"
+          echo -e "  ${YELLOW}主机:${NC} ${DB_HOST}"
+          echo -e "  ${YELLOW}端口:${NC} ${DB_PORT}"
+          echo -e "  ${YELLOW}用户:${NC} ${DB_USER}"
+          echo -e "  ${YELLOW}数据库:${NC} ${DB_NAME}"
+          
+          # 创建适用于psql的连接字符串 (不包括驱动部分)
+          DB_PSQL_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+        fi
+      fi
+      
+      # 提取Redis URL
+      if grep -q "REDIS_URL" "$env_file"; then
+        REDIS_URL=$(grep "REDIS_URL" "$env_file" | cut -d '=' -f2 | tr -d ' ')
+        echo -e "${GREEN}从${env_file}加载到Redis URL: ${REDIS_URL}${NC}"
+      fi
+      
+      break
+    fi
+  done
+  
+  # 如果未能从.env加载到数据库配置，使用默认值
+  if [ -z "$DB_NAME" ]; then
+    echo -e "${YELLOW}未在环境文件中找到数据库配置，使用默认值...${NC}"
+    DB_HOST="localhost"
+    DB_PORT="5432"
+    DB_USER="postgres"
+    DB_PASSWORD="postgres"
+    DB_NAME="heatsight_dev"
+    DB_DRIVER="postgresql"
+    DB_PSQL_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+  fi
+  
+  echo -e "${GREEN}环境配置加载完成!${NC}"
+}
+
 # 打印脚本标题
 print_title() {
   clear
@@ -18,6 +122,7 @@ print_title() {
   echo -e "${CYAN}         HeatSight 数据库管理工具               ${NC}"
   echo -e "${BLUE}=================================================${NC}"
   echo -e "${YELLOW}工作目录: $(pwd)${NC}\n"
+  echo -e "${YELLOW}数据库: ${DB_HOST}:${DB_PORT}/${DB_NAME}${NC}\n"
 }
 
 # 检查依赖
@@ -112,6 +217,21 @@ ensure_db_exists() {
   
   if [ "$POSTGRES_RUNNING" -eq 0 ]; then
     echo -e "${YELLOW}PostgreSQL容器未运行，正在启动...${NC}"
+    
+    # 配置环境变量 - 使用从.env文件加载的变量
+    # 这些变量会传递给Docker容器
+    export POSTGRES_DB="$DB_NAME"
+    export POSTGRES_USER="$DB_USER"
+    export POSTGRES_PASSWORD="$DB_PASSWORD"
+    export POSTGRES_HOST="$DB_HOST"
+    export POSTGRES_PORT="$DB_PORT"
+    
+    # 显示将使用的环境变量
+    echo -e "${YELLOW}使用以下环境变量启动数据库容器:${NC}"
+    echo -e "  POSTGRES_DB=${GREEN}$POSTGRES_DB${NC}"
+    echo -e "  POSTGRES_USER=${GREEN}$POSTGRES_USER${NC}"
+    echo -e "  POSTGRES_PASSWORD=${GREEN}$POSTGRES_PASSWORD${NC}"
+    
     docker compose up -d postgres
     
     # 等待容器启动
@@ -153,15 +273,16 @@ ensure_db_exists() {
   # 检查数据库是否已存在方式
   echo -e "${YELLOW}检查数据库是否存在...${NC}"
   
-  # 直接尝试连接到heatsight_dev数据库
-  if docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT 1" > /dev/null 2>&1; then
-    echo -e "${GREEN}数据库 'heatsight_dev' 已存在，跳过创建步骤。${NC}"
+  # 直接尝试连接到指定数据库
+  if docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT 1" > /dev/null 2>&1; then
+    echo -e "${GREEN}数据库 '$DB_NAME' 已存在，跳过创建步骤。${NC}"
     return 0
   fi
   
   # 如果连接失败，尝试创建数据库
-  echo -e "${YELLOW}创建 'heatsight_dev' 数据库...${NC}"
-  CREATE_OUTPUT=$(docker exec postgres-local createdb -U postgres heatsight_dev 2>&1)
+  echo -e "${YELLOW}创建 '$DB_NAME' 数据库...${NC}"
+  # 使用psql命令创建数据库而不是createdb工具
+  CREATE_OUTPUT=$(docker exec postgres-local psql -U "$DB_USER" -c "CREATE DATABASE $DB_NAME;" 2>&1)
   CREATE_RESULT=$?
   
   # 检查创建结果
@@ -171,7 +292,7 @@ ensure_db_exists() {
   else
     # 检查是否是因为数据库已存在而失败
     if echo "$CREATE_OUTPUT" | grep -q "already exists"; then
-      echo -e "${GREEN}数据库 'heatsight_dev' 已存在，继续操作。${NC}"
+      echo -e "${GREEN}数据库 '$DB_NAME' 已存在，继续操作。${NC}"
       return 0
     else
       echo -e "${RED}错误: 创建数据库失败: $CREATE_OUTPUT${NC}"
@@ -185,7 +306,7 @@ start_db_services() {
   # 获取实际使用的端口
   PGADMIN_PORT=$(docker ps | grep "pgadmin-local" | grep -o "0.0.0.0:[0-9]*->80/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "5050")
   REDIS_COMMANDER_PORT=$(docker ps | grep -e "redis-commander-local\|rediscommander" | grep -o "0.0.0.0:[0-9]*->8081/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "8081")
-  POSTGRES_PORT=$(docker ps | grep "postgres-local" | grep -o "0.0.0.0:[0-9]*->5432/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "5432")
+  POSTGRES_PORT=$(docker ps | grep "postgres-local" | grep -o "0.0.0.0:[0-9]*->5432/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "$DB_PORT")
   REDIS_PORT=$(docker ps | grep "redis-local " | grep -o "0.0.0.0:[0-9]*->6379/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "6379")
 
   # 检查容器是否已经在运行
@@ -217,6 +338,12 @@ start_db_services() {
     echo -e "\n${YELLOW}启动PostgreSQL服务...${NC}"
     # 只启动PostgreSQL服务，不启动Redis相关服务和PGAdmin
     # 使用docker-compose.yml中的服务名称'postgres'
+    
+    # 配置环境变量
+    export POSTGRES_DB="$DB_NAME"
+    export POSTGRES_USER="$DB_USER"
+    export POSTGRES_PASSWORD="$DB_PASSWORD"
+    
     docker compose up -d postgres
 
     # 等待服务启动
@@ -227,7 +354,7 @@ start_db_services() {
     POSTGRES_RUNNING=$(docker ps | grep "postgres-local" | wc -l)
     
     # 更新端口信息
-    POSTGRES_PORT=$(docker ps | grep "postgres-local" | grep -o "0.0.0.0:[0-9]*->5432/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "5432")
+    POSTGRES_PORT=$(docker ps | grep "postgres-local" | grep -o "0.0.0.0:[0-9]*->5432/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "$DB_PORT")
     
     echo -e "${YELLOW}PostgreSQL服务启动后状态:${NC}"
     echo -e "PostgreSQL: $([ "$POSTGRES_RUNNING" -ge 1 ] && echo "${GREEN}运行中${NC}" || echo "${RED}未运行${NC}")"
@@ -245,17 +372,17 @@ start_db_services() {
   
   # 显示服务信息（使用实际端口）
   echo -e "\n${BLUE}服务信息:${NC}"
-  echo -e "PostgreSQL: ${GREEN}localhost:${POSTGRES_PORT}${NC}"
-  echo -e "用户名: ${GREEN}postgres${NC}"
-  echo -e "密码: ${GREEN}postgres${NC}"
-  echo -e "数据库: ${GREEN}heatsight_dev${NC}"
+  echo -e "PostgreSQL: ${GREEN}${DB_HOST}:${POSTGRES_PORT}${NC}"
+  echo -e "用户名: ${GREEN}${DB_USER}${NC}"
+  echo -e "密码: ${GREEN}${DB_PASSWORD}${NC}"
+  echo -e "数据库: ${GREEN}${DB_NAME}${NC}"
   
   # 显示其他服务的信息（如果它们在运行）
   if [ "$REDIS_RUNNING" -ge 1 ] || [ "$REDIS_COMMANDER_RUNNING" -ge 1 ] || [ "$PGADMIN_RUNNING" -ge 1 ]; then
     echo -e "\n${YELLOW}其他相关服务信息 (仅供参考):${NC}"
     
     if [ "$REDIS_RUNNING" -ge 1 ]; then
-      echo -e "Redis: ${GREEN}localhost:${REDIS_PORT}${NC}"
+      echo -e "Redis主机: ${GREEN}localhost:${REDIS_PORT}${NC}"
     fi
     
     if [ "$REDIS_COMMANDER_RUNNING" -ge 1 ]; then
@@ -296,17 +423,17 @@ init_db_structure() {
   
   # 检查topics表是否已存在
   echo -e "${YELLOW}检查topics表是否存在...${NC}"
-  if docker exec postgres-local psql -U postgres -d heatsight_dev -c "\dt topics" | grep -q "topics"; then
+  if docker exec postgres-local psql "$DB_PSQL_URL" -c "\dt topics" | grep -q "topics"; then
     echo -e "${GREEN}topics表已存在，跳过创建步骤。${NC}"
   else
     # 直接使用Docker执行SQL命令创建表
     echo -e "${YELLOW}创建topics表...${NC}"
-    if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "
+    if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "
       CREATE TABLE IF NOT EXISTS topics (
         id SERIAL PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
         summary TEXT,
-        source_name VARCHAR(100),
+        source_id VARCHAR(100) NOT NULL,
         category VARCHAR(50),
         published_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         url VARCHAR(512),
@@ -329,21 +456,25 @@ init_db_structure() {
   
   # 检查content_suggestions表是否已存在
   echo -e "${YELLOW}检查content_suggestions表是否存在...${NC}"
-  if docker exec postgres-local psql -U postgres -d heatsight_dev -c "\dt content_suggestions" | grep -q "content_suggestions"; then
+  if docker exec postgres-local psql "$DB_PSQL_URL" -c "\dt content_suggestions" | grep -q "content_suggestions"; then
     echo -e "${GREEN}content_suggestions表已存在，跳过创建步骤。${NC}"
   else
     echo -e "${YELLOW}创建content_suggestions表...${NC}"
-    if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "
+    if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "
       CREATE TABLE IF NOT EXISTS content_suggestions (
         id SERIAL PRIMARY KEY,
         topic_id INTEGER REFERENCES topics(id) ON DELETE CASCADE,
-        category VARCHAR(100),
+        category VARCHAR(50) NOT NULL,
         suggestion_type VARCHAR(50) NOT NULL,
         content TEXT NOT NULL,
         position INTEGER DEFAULT 0,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+      
+      -- 创建索引
+      CREATE INDEX IF NOT EXISTS content_suggestions_category_idx ON content_suggestions(category);
+      CREATE INDEX IF NOT EXISTS content_suggestions_topic_id_idx ON content_suggestions(topic_id);
     "; then
       echo -e "${RED}错误: 创建content_suggestions表失败${NC}"
       return 1
@@ -368,23 +499,23 @@ init_topic_data() {
 TRUNCATE topics CASCADE;
 
 -- 插入话题数据
-INSERT INTO topics (title, summary, category, heat, created_at, updated_at)
+INSERT INTO topics (title, summary, source_id, category, heat, created_at, updated_at)
 VALUES 
-('元宇宙发展现状与未来趋势', '探讨元宇宙技术发展现状、应用场景与未来可能的发展方向', '科技', 95.5, NOW(), NOW()),
-('数字人民币试点扩大到更多城市', '数字人民币试点范围进一步扩大，应用场景不断丰富', '财经', 92.8, NOW(), NOW()),
-('新能源汽车销量创历史新高', '新能源汽车市场快速发展，多家车企销量创新高', '汽车', 90.2, NOW(), NOW()),
-('AI绘画引发版权争议', '人工智能绘画技术引发的艺术创作与版权归属问题', '科技', 88.7, NOW(), NOW()),
-('芯片短缺问题持续影响全球供应链', '全球芯片供应紧张，影响多个行业生产和供应', '科技', 86.3, NOW(), NOW()),
-('在线教育行业进入深度调整期', '在线教育行业面临新政策环境下的挑战与转型', '教育', 85.1, NOW(), NOW()),
-('碳达峰碳中和政策推进情况分析', '各地碳达峰碳中和相关政策实施进展与效果分析', '环保', 83.4, NOW(), NOW()),
-('直播电商新规出台', '针对直播电商行业的新监管政策解读及影响分析', '电商', 81.9, NOW(), NOW());
+('元宇宙发展现状与未来趋势', '探讨元宇宙技术发展现状、应用场景与未来可能的发展方向', '1001', '科技', 95.5, NOW(), NOW()),
+('数字人民币试点扩大到更多城市', '数字人民币试点范围进一步扩大，应用场景不断丰富', '1002', '财经', 92.8, NOW(), NOW()),
+('新能源汽车销量创历史新高', '新能源汽车市场快速发展，多家车企销量创新高', '1003', '汽车', 90.2, NOW(), NOW()),
+('AI绘画引发版权争议', '人工智能绘画技术引发的艺术创作与版权归属问题', '1004', '科技', 88.7, NOW(), NOW()),
+('芯片短缺问题持续影响全球供应链', '全球芯片供应紧张，影响多个行业生产和供应', '1005', '科技', 86.3, NOW(), NOW()),
+('在线教育行业进入深度调整期', '在线教育行业面临新政策环境下的挑战与转型', '1006', '教育', 85.1, NOW(), NOW()),
+('碳达峰碳中和政策推进情况分析', '各地碳达峰碳中和相关政策实施进展与效果分析', '1007', '环保', 83.4, NOW(), NOW()),
+('直播电商新规出台', '针对直播电商行业的新监管政策解读及影响分析', '1008', '电商', 81.9, NOW(), NOW());
 
 -- 显示添加的数据
 SELECT id, title, category, heat FROM topics ORDER BY heat DESC;
 EOF
 
   # 执行SQL脚本
-  docker exec -i postgres-local psql -U postgres -d heatsight_dev -f - < init_topics.sql
+  docker exec -i postgres-local psql "$DB_PSQL_URL" -f - < init_topics.sql
   
   # 清理临时文件
   rm init_topics.sql
@@ -764,7 +895,7 @@ ORDER BY suggestion_count DESC;
 EOF
 
   # 执行SQL脚本
-  docker exec -i postgres-local psql -U postgres -d heatsight_dev -f - < init_suggestions.sql
+  docker exec -i postgres-local psql "$DB_PSQL_URL" -f - < init_suggestions.sql
   
   # 清理临时文件
   rm init_suggestions.sql
@@ -924,7 +1055,7 @@ ORDER BY suggestion_count DESC;
 EOF
 
   # 执行SQL脚本
-  docker exec -i postgres-local psql -U postgres -d heatsight_dev -f - < update_links.sql
+  docker exec -i postgres-local psql "$DB_PSQL_URL" -f - < update_links.sql
   
   # 清理临时文件
   rm update_links.sql
@@ -969,9 +1100,10 @@ clean_db_data() {
     echo -e "${YELLOW}正在清空数据...${NC}"
     
     # 使用Docker执行SQL命令清空表
-    if docker exec postgres-local psql -U postgres -d heatsight_dev -c "
+    if docker exec postgres-local psql "$DB_PSQL_URL" -c "
       TRUNCATE topics CASCADE;
       TRUNCATE content_suggestions CASCADE;
+      TRUNCATE news_heat_scores CASCADE;
     "; then
       echo -e "${GREEN}数据清空完成!${NC}"
     else
@@ -1029,7 +1161,7 @@ END
 EOF
 
   # 执行SQL脚本
-  docker exec -i postgres-local psql -U postgres -d heatsight_dev -f - < init_heat_scores_structure.sql
+  docker exec -i postgres-local psql "$DB_PSQL_URL" -f - < init_heat_scores_structure.sql
   
   # 清理临时文件
   rm init_heat_scores_structure.sql
@@ -1072,7 +1204,7 @@ trigger_heat_score_generation() {
   if ! $BACKEND_RUNNING; then
     echo -e "${RED}HeatSight后端服务未运行，无法触发热度评分生成${NC}"
     echo -e "${YELLOW}请先启动后端服务，然后再尝试此操作${NC}"
-    echo -e "${YELLOW}启动命令: cd backend && python -m run.py${NC}"
+    echo -e "${YELLOW}启动命令: cd backend && python -m main.py${NC}"
     return 1
   fi
   
@@ -1099,12 +1231,12 @@ show_db_status() {
   # 获取实际使用的端口
   PGADMIN_PORT=$(docker ps | grep "pgadmin-local" | grep -o "0.0.0.0:[0-9]*->80/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "5050")
   REDIS_COMMANDER_PORT=$(docker ps | grep -e "redis-commander-local\|rediscommander" | grep -o "0.0.0.0:[0-9]*->8081/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "8081")
-  POSTGRES_PORT=$(docker ps | grep "postgres-local" | grep -o "0.0.0.0:[0-9]*->5432/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "5432")
+  POSTGRES_PORT=$(docker ps | grep "postgres-local" | grep -o "0.0.0.0:[0-9]*->5432/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "$DB_PORT")
   REDIS_PORT=$(docker ps | grep "redis-local " | grep -o "0.0.0.0:[0-9]*->6379/tcp" | cut -d':' -f2 | cut -d'-' -f1 || echo "6379")
   
   # 如果未检测到Redis，尝试查找其他Redis容器
   if [ -z "$REDIS_PORT" ]; then
-    REDIS_PORT=$(docker ps | grep -e "redis" | grep -v "redis-commander\|rediscommander" | grep -o "0.0.0.0:[0-9]*->6379/tcp" | head -1 | cut -d':' -f2 | cut -d'-' -f1 || echo "6380")
+    REDIS_PORT=$(docker ps | grep -e "redis" | grep -v "redis-commander\|rediscommander" | grep -o "0.0.0.0:[0-9]*->6379/tcp" | head -1 | cut -d':' -f2 | cut -d'-' -f1 || echo "6379")
   fi
   
   # 如果未检测到Redis Commander，尝试查找其他Redis Commander容器
@@ -1117,10 +1249,10 @@ show_db_status() {
   
   # 显示PostgreSQL连接信息
   echo -e "\n${YELLOW}PostgreSQL连接信息:${NC}"
-  echo -e "数据库主机: ${GREEN}localhost:${POSTGRES_PORT}${NC}"
-  echo -e "数据库用户: ${GREEN}postgres${NC}"
-  echo -e "数据库密码: ${GREEN}postgres${NC}"
-  echo -e "数据库名称: ${GREEN}heatsight_dev${NC}"
+  echo -e "数据库主机: ${GREEN}${DB_HOST}:${POSTGRES_PORT}${NC}"
+  echo -e "数据库用户: ${GREEN}${DB_USER}${NC}"
+  echo -e "数据库密码: ${GREEN}${DB_PASSWORD}${NC}"
+  echo -e "数据库名称: ${GREEN}${DB_NAME}${NC}"
   
   # 显示Redis和Redis Commander信息
   echo -e "\n${YELLOW}Redis和Redis Commander访问信息:${NC}"
@@ -1132,8 +1264,8 @@ show_db_status() {
   # 显示PGAdmin信息
   echo -e "\n${YELLOW}PGAdmin访问信息:${NC}"
   echo -e "网址: ${GREEN}http://localhost:${PGADMIN_PORT}${NC}"
-  echo -e "登录邮箱: ${GREEN}losesky@gmail.com${NC}"
-  echo -e "登录密码: ${GREEN}admin${NC}"
+  echo -e "PGAdmin登录邮箱: ${GREEN}losesky@gmail.com${NC}"
+  echo -e "PGAdmin登录密码: ${GREEN}admin${NC}"
   
   # 检查PostgreSQL服务是否可访问
   if ! docker exec postgres-local pg_isready -q; then
@@ -1141,37 +1273,37 @@ show_db_status() {
     return 1
   fi
   
-  # 检查heatsight_dev数据库是否存在 - 直接尝试连接
-  if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT 1" > /dev/null 2>&1; then
-    echo -e "\n${RED}数据库 'heatsight_dev' 不存在或无法连接，请先初始化数据库${NC}"
+  # 检查数据库是否存在 - 直接尝试连接
+  if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT 1" > /dev/null 2>&1; then
+    echo -e "\n${RED}数据库 '${DB_NAME}' 不存在或无法连接，请先初始化数据库${NC}"
     return 1
   fi
   
   echo -e "\n${YELLOW}主题数据统计:${NC}"
-  if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT COUNT(*) AS total_topics FROM topics;" 2>/dev/null; then
+  if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT COUNT(*) AS total_topics FROM topics;" 2>/dev/null; then
     echo -e "${RED}无法查询 topics 表，请确保表已创建${NC}"
   fi
   
   echo -e "\n${YELLOW}内容建议数据统计:${NC}"
-  if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT COUNT(*) AS total_suggestions FROM content_suggestions;" 2>/dev/null; then
+  if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT COUNT(*) AS total_suggestions FROM content_suggestions;" 2>/dev/null; then
     echo -e "${RED}无法查询 content_suggestions 表，请确保表已创建${NC}"
   fi
   
   echo -e "\n${YELLOW}主题-内容建议关联统计:${NC}"
-  if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT t.title, COUNT(cs.id) AS suggestion_count FROM topics t LEFT JOIN content_suggestions cs ON t.id = cs.topic_id GROUP BY t.id, t.title ORDER BY suggestion_count DESC;" 2>/dev/null; then
+  if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT t.title, COUNT(cs.id) AS suggestion_count FROM topics t LEFT JOIN content_suggestions cs ON t.id = cs.topic_id GROUP BY t.id, t.title ORDER BY suggestion_count DESC;" 2>/dev/null; then
     echo -e "${RED}无法查询主题-内容建议关联，请确保相关表已创建${NC}"
   fi
   
   echo -e "\n${YELLOW}新闻热度评分数据统计:${NC}"
-  if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT COUNT(*) AS total_heat_scores FROM news_heat_scores;" 2>/dev/null; then
+  if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT COUNT(*) AS total_heat_scores FROM news_heat_scores;" 2>/dev/null; then
     echo -e "${RED}无法查询 news_heat_scores 表，请确保表已创建${NC}"
   fi
   
-  if docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT COUNT(*) AS count FROM news_heat_scores;" 2>/dev/null | grep -q "(0 rows)"; then
+  if docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT COUNT(*) AS count FROM news_heat_scores;" 2>/dev/null | grep -q "(0 rows)"; then
     echo -e "${YELLOW}news_heat_scores 表中没有数据，请通过API触发热度评分生成${NC}"
   else
     echo -e "\n${YELLOW}热度最高的新闻:${NC}"
-    if ! docker exec postgres-local psql -U postgres -d heatsight_dev -c "SELECT id, title, source_id, heat_score FROM news_heat_scores ORDER BY heat_score DESC LIMIT 5;" 2>/dev/null; then
+    if ! docker exec postgres-local psql "$DB_PSQL_URL" -c "SELECT id, title, source_id, heat_score FROM news_heat_scores ORDER BY heat_score DESC LIMIT 5;" 2>/dev/null; then
       echo -e "${RED}无法查询热度最高的新闻，请确保 news_heat_scores 表已创建并包含数据${NC}"
     fi
   fi
@@ -1180,6 +1312,12 @@ show_db_status() {
 # 初始化所有数据（主题+内容建议+关联）
 init_all_data() {
   echo -e "${YELLOW}一键初始化所有数据...${NC}"
+  
+  # 首先确保数据库结构已创建
+  if ! init_db_structure; then
+    echo -e "${RED}初始化数据库结构失败，无法继续数据初始化。${NC}"
+    return 1
+  fi
   
   # 依次执行三个初始化函数
   init_topic_data
@@ -1305,6 +1443,12 @@ main() {
     exit 1
   fi
   
+  # 加载环境配置
+  load_env_config
+  
+  # 显示数据库配置摘要
+  show_db_config
+  
   # 判断是否使用快速初始化模式
   if [ "$1" = "--quick" ]; then
     quick_init
@@ -1324,4 +1468,6 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
 fi
 
 # 执行主程序
-main "$@" 
+main "$@"
+
+

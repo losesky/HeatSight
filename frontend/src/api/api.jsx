@@ -57,7 +57,7 @@ export const topicsApi = {
     try {
       logDebug('获取热门话题, 参数:', params);
       // 使用API实例调用，而不是直接使用axios
-      const response = await api.get('/topics/hot', { params });
+      const response = await api.get(`${API_BASE_URL}/topics/hot`, { params });
       return response;
     } catch (error) {
       console.error('获取热门话题失败:', error);
@@ -68,7 +68,7 @@ export const topicsApi = {
   // 获取分类
   getCategories: async () => {
     try {
-      const response = await api.get('/topics/categories');
+      const response = await api.get(`${API_BASE_URL}/topics/categories`);
       return response;
     } catch (error) {
       console.error('获取分类失败:', error);
@@ -79,7 +79,7 @@ export const topicsApi = {
   // 获取单个话题详情
   getTopicById: async (id) => {
     try {
-      const response = await api.get(`/topics/${id}`);
+      const response = await api.get(`${API_BASE_URL}/topics/${id}`);
       return response;
     } catch (error) {
       console.error(`获取话题${id}详情失败:`, error);
@@ -90,7 +90,7 @@ export const topicsApi = {
   // 获取相关话题
   getRelatedTopics: async (id) => {
     try {
-      const response = await api.get(`/topics/${id}/related`);
+      const response = await api.get(`${API_BASE_URL}/topics/${id}/related`);
       return response;
     } catch (error) {
       console.error(`获取相关话题失败:`, error);
@@ -101,7 +101,7 @@ export const topicsApi = {
   // 搜索话题
   searchTopics: async (query, params = {}) => {
     try {
-      const response = await api.get('/topics/search', { 
+      const response = await api.get(`${API_BASE_URL}/topics/search`, { 
         params: { 
           query,
           ...params 
@@ -116,12 +116,12 @@ export const topicsApi = {
   
   // 获取推荐话题
   getRecommendedTopics: (params = {}) => {
-    return api.get('/topics/recommended', { params });
+    return api.get(`${API_BASE_URL}/topics/recommended`, { params });
   },
   
   // 获取特定分类的话题
   getTopicsByCategory: (category, params = {}) => {
-    return api.get('/topics/category', { 
+    return api.get(`${API_BASE_URL}/topics/category`, { 
       params: { 
         category,
         ...params 
@@ -133,12 +133,12 @@ export const topicsApi = {
 export const contentApi = {
   // 为特定话题生成内容建议
   generateContent: (topicId) => {
-    return api.get(`/content/generate/${topicId}`);
+    return api.get(`${API_BASE_URL}/content/generate/${topicId}`);
   },
   
   // 获取相关子话题
   getSubtopics: (topicTitle, category = null) => {
-    return api.get('/content/subtopics', {
+    return api.get(`${API_BASE_URL}/content/subtopics`, {
       params: {
         topic_title: topicTitle,
         category
@@ -152,8 +152,9 @@ export const newsHeatApi = {
   // 获取多个新闻的热度分数
   getHeatScores: async (newsIds) => {
     try {
-      const response = await api.get('/heat-score/scores', {
-        params: { news_ids: newsIds }
+      // 使用POST请求发送新闻ID数组，避免URL长度限制
+      const response = await api.post(`${API_BASE_URL}/heat-score/scores`, {
+        news_ids: newsIds
       });
       return response;
     } catch (error) {
@@ -165,8 +166,9 @@ export const newsHeatApi = {
   // 获取多个新闻的详细热度数据
   getDetailedHeatScores: async (newsIds) => {
     try {
-      const response = await api.get('/heat-score/detailed-scores', {
-        params: { news_ids: newsIds }
+      // 使用POST请求发送新闻ID数组
+      const response = await api.post(`${API_BASE_URL}/heat-score/detailed-scores`, {
+        news_ids: newsIds
       });
       return response;
     } catch (error) {
@@ -178,7 +180,7 @@ export const newsHeatApi = {
   // 获取热门新闻列表
   getTopNews: async (params = {}) => {
     try {
-      const response = await api.get('/heat-score/top', { params });
+      const response = await api.get(`${API_BASE_URL}/heat-score/top`, { params });
       return response;
     } catch (error) {
       console.error('获取热门新闻失败:', error);
@@ -189,7 +191,7 @@ export const newsHeatApi = {
   // 触发热度更新任务
   triggerHeatUpdate: async () => {
     try {
-      const response = await api.post('/heat-score/update');
+      const response = await api.post(`${API_BASE_URL}/heat-score/update`);
       return response;
     } catch (error) {
       console.error('触发热度更新失败:', error);

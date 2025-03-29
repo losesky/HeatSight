@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS topics (
     id SERIAL PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     summary TEXT,
-    source_name VARCHAR(100),
+    source_id VARCHAR(100),
     category VARCHAR(50),
     published_at TIMESTAMP DEFAULT NOW(),
     url VARCHAR(512),

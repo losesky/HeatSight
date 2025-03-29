@@ -74,7 +74,7 @@ const TopicDecomposition = () => {
         category: '科技',
         summary: '随着Facebook更名为Meta，元宇宙概念再次升温。本话题探讨元宇宙相关技术的最新发展与未来应用场景。',
         published_at: new Date().toISOString(),
-        source_name: '科技前沿报告',
+        source_id: '科技前沿报告',
         extra: {
           heat: 92,
           views: 1543,
@@ -201,10 +201,12 @@ const TopicDecomposition = () => {
   
   // 格式化热度显示
   const formatHeat = (heat) => {
-    if (heat >= 90) return { text: '极热', class: 'bg-red-100 text-red-800' };
-    if (heat >= 80) return { text: '热门', class: 'bg-orange-100 text-orange-800' };
-    if (heat >= 70) return { text: '较热', class: 'bg-yellow-100 text-yellow-800' };
-    return { text: '普通', class: 'bg-blue-100 text-blue-800' };
+    const roundedHeat = Math.round(heat);
+    if (roundedHeat >= 90) return { text: '极热', class: 'bg-red-100 text-red-800' };
+    if (roundedHeat >= 80) return { text: '热门', class: 'bg-orange-100 text-orange-800' };
+    if (roundedHeat >= 70) return { text: '较热', class: 'bg-yellow-100 text-yellow-800' };
+    if (roundedHeat > 0) return { text: '普通', class: 'bg-blue-100 text-blue-800' };
+    return { text: '', class: 'bg-gray-100 text-gray-800' };
   };
   
   // 格式化相关度
@@ -302,7 +304,7 @@ const TopicDecomposition = () => {
                 <FiClock className="mr-1" />
                 {new Date(topic.published_at).toLocaleDateString()}
               </span>
-              <span>{topic.source_name}</span>
+              <span>{topic.source_id}</span>
             </div>
           </div>
         </div>

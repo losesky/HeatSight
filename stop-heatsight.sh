@@ -32,10 +32,10 @@ else
 fi
 
 # 停止后端进程
-PYTHON_PIDS=$(ps aux | grep -E 'python.*run.py|uvicorn' | grep -v grep | awk '{print $2}')
+PYTHON_PIDS=$(ps aux | grep -E 'python.*main.py|uvicorn' | grep -v grep | awk '{print $2}')
 if [ -n "$PYTHON_PIDS" ]; then
     echo -e "${BLUE}找到后端进程:${NC}"
-    ps aux | grep -E 'python.*run.py|uvicorn' | grep -v grep
+    ps aux | grep -E 'python.*main.py|uvicorn' | grep -v grep
     echo -e "${RED}正在终止后端进程...${NC}"
     for pid in $PYTHON_PIDS; do
         kill -9 $pid 2>/dev/null

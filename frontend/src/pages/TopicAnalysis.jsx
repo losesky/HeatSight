@@ -88,7 +88,7 @@ const TopicAnalysis = () => {
           <h1 className="text-2xl font-bold text-gray-900">{topic?.title}</h1>
           
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-gray-500">
-            <span>{topic?.source_name}</span>
+            <span>{topic?.source_id}</span>
             
             <span className="flex items-center">
               <FiClock className="mr-1" />
@@ -326,7 +326,7 @@ const TopicAnalysis = () => {
                   >
                     <h3 className="font-medium text-gray-900">{relatedTopic.title}</h3>
                     <div className="mt-1 flex items-center text-sm text-gray-500">
-                      <span>{relatedTopic.source_name}</span>
+                      <span>{relatedTopic.source_id}</span>
                       <span className="mx-1">•</span>
                       <span className="flex items-center">
                         <FiBarChart2 className="mr-1" />
