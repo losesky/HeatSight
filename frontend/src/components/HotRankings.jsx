@@ -16,6 +16,7 @@ import { newsHeatApi } from '../api/api'; // Import the newsHeatApi service
 
 // Update API URL to use the correct HeatLink endpoint
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080/api';
 
 // 缓存keys
 const CACHE_KEYS = {
@@ -142,7 +143,7 @@ const HotRankings = () => {
         console.log('Fetching fresh data from API');
         
         // 1. 首先获取所有可用的源
-        const sourcesResponse = await axios.get(`${API_URL}/external/sources`);
+        const sourcesResponse = await axios.get(`${API_BASE_URL}/heat-score/source-weights`);
         
         if (!sourcesResponse.data || !sourcesResponse.data.sources) {
           throw new Error('Failed to fetch sources data');
@@ -150,6 +151,11 @@ const HotRankings = () => {
         
         // 排序源
         const sortedSources = sourcesResponse.data.sources.sort((a, b) => {
+          // 首先按权重降序排序
+          if (b.weight !== a.weight) {
+            return b.weight - a.weight;
+          }
+          // 权重相同时，按分类和名称排序
           if (a.category === b.category) {
             return a.name.localeCompare(b.name);
           }
@@ -305,7 +311,7 @@ const HotRankings = () => {
           console.log('Manually refreshing data from API');
           
           // 1. 首先获取所有可用的源
-          const sourcesResponse = await axios.get(`${API_URL}/external/sources`);
+          const sourcesResponse = await axios.get(`${API_BASE_URL}/heat-score/source-weights`);
           
           if (!sourcesResponse.data || !sourcesResponse.data.sources) {
             throw new Error('Failed to fetch sources data');
@@ -313,6 +319,11 @@ const HotRankings = () => {
           
           // 排序源
           const sortedSources = sourcesResponse.data.sources.sort((a, b) => {
+            // 首先按权重降序排序
+            if (b.weight !== a.weight) {
+              return b.weight - a.weight;
+            }
+            // 权重相同时，按分类和名称排序
             if (a.category === b.category) {
               return a.name.localeCompare(b.name);
             }

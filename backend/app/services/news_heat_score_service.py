@@ -80,9 +80,29 @@ class NewsHeatScoreService:
         try:
             # 加载中文停用词
             self.cn_stopwords = set()
-            # 如果有中文停用词文件，可以在这里加载
-            # with open("path/to/cn_stopwords.txt", "r", encoding="utf-8") as f:
-            #     self.cn_stopwords = set([line.strip() for line in f])
+            # 创建临时停用词文件
+            self.cn_stopwords_file = os.path.join(
+                os.path.dirname(__file__),
+                "cn_stopwords.txt"
+            )
+            
+            # 写入基本的中文停用词
+            basic_stopwords = {
+                "的", "了", "和", "是", "就", "都", "而", "及", "与", "着",
+                "或", "一个", "没有", "我们", "你们", "他们", "它们", "这个",
+                "那个", "这些", "那些", "这样", "那样", "之", "的话", "说",
+                "时候", "显示", "一些", "现在", "已经", "什么", "只是", "还是",
+                "可以", "这", "那", "又", "也", "有", "到", "很", "来", "去",
+                "把", "被", "让", "但", "但是", "然后", "所以", "因为", "由于",
+                "所以", "因此", "如果", "虽然", "于是", "一直", "并", "并且",
+                "不过", "不", "没", "一", "在", "中", "为", "以", "能", "要"
+            }
+            
+            # 将停用词写入文件
+            with open(self.cn_stopwords_file, "w", encoding="utf-8") as f:
+                f.write("\n".join(basic_stopwords))
+            
+            self.cn_stopwords.update(basic_stopwords)
             
             # 加载英文停用词
             if NLTK_AVAILABLE:
@@ -159,8 +179,8 @@ class NewsHeatScoreService:
         if self._is_chinese(text):
             # 1. 提取关键短语（2-3个词的组合）
             import jieba.analyse
-            # 设置停用词
-            jieba.analyse.set_stop_words(self.cn_stopwords)
+            # 设置停用词文件路径
+            jieba.analyse.set_stop_words(self.cn_stopwords_file)
             
             # 使用TextRank提取关键短语
             keywords = jieba.analyse.textrank(
@@ -349,100 +369,115 @@ class NewsHeatScoreService:
         session: AsyncSession
     ) -> NewsHeatScore:
         """为单个新闻项计算热度分数"""
-        # 提取关键词
-        keywords = await self._extract_keywords(
-            news_item["title"], news_item.get("content", "")
-        )
-        
-        # 计算关键词匹配度得分（通过搜索相似新闻）
-        similar_count = 0
-        for keyword in keywords[:3]:  # 使用前3个关键词进行搜索
-            try:
-                search_response = await self.heatlink_client.get(
-                    "news", params={"search": keyword["word"]}
-                )
-                if search_response and "items" in search_response:
-                    similar_count += len(search_response["items"])
-            except Exception as e:
-                logger.error(f"关键词搜索失败: {e}")
-        
-        # 归一化相似新闻数量为0-100分
-        keyword_score = min(similar_count / BASELINE_FACTOR * 100, 100)
-        
-        # 计算时效性得分
-        # 标准化时间格式处理，确保时区信息正确
         try:
-            published_str = news_item["published_at"]
-            # 处理不同格式的ISO日期字符串
-            if 'Z' in published_str:
-                # 替换Z为+00:00标准格式
-                published_str = published_str.replace('Z', '+00:00')
-            elif '+' not in published_str and '-' not in published_str[10:]:
-                # 如果字符串中没有时区信息，添加UTC时区
-                published_str = published_str + '+00:00'
-            
-            # 解析日期并确保是UTC时区
-            published_time = datetime.fromisoformat(published_str)
-            # 如果没有时区信息，添加UTC时区
-            if published_time.tzinfo is None:
-                published_time = published_time.replace(tzinfo=timezone.utc)
-        except Exception as e:
-            logger.error(f"解析发布时间失败: {e}，使用当前时间作为发布时间")
-            published_time = datetime.now(timezone.utc)
-        
-        # 使用带时区的当前时间来计算时间差
-        hours_passed = (datetime.now(timezone.utc) - published_time).total_seconds() / 3600
-        recency_score = 100 * math.exp(-hours_passed / DECAY_FACTOR)
-        
-        # 计算原平台热度得分
-        platform_score = 0
-        if "metrics" in news_item:
-            platform_score = await self._normalize_platform_score(
-                news_item["metrics"], news_item["source_id"]
+            # 提取关键词
+            keywords = await self._extract_keywords(
+                news_item["title"], news_item.get("content", "")
             )
-        
-        # 计算跨源频率得分
-        cross_source_score = await self._calculate_cross_source_score(
-            news_item["title"], all_news_items
-        )
-        
-        # 获取来源权重
-        source_weight = await self._get_source_weight(news_item["source_id"], session)
-        
-        # 综合计算最终热度
-        final_score = (
-            (W_KEYWORD * keyword_score) +
-            (W_RECENCY * recency_score) +
-            (W_PLATFORM * platform_score) +
-            (W_CROSS_SOURCE * cross_source_score) +
-            (W_SOURCE * source_weight)
-        )
-        
-        # 归一化到0-100
-        final_score = min(max(final_score, 0), 100)
-        
-        # 创建热度评分对象
-        heat_score = HeatScoreCreate(
-            news_id=news_item["id"],
-            source_id=news_item["source_id"],
-            title=news_item["title"],
-            url=news_item["url"],
-            heat_score=final_score,
-            relevance_score=keyword_score,
-            recency_score=recency_score,
-            popularity_score=platform_score,
-            meta_data={
-                "cross_source_score": cross_source_score,
-                "source_weight": source_weight
-            },
-            keywords=keywords,
-            published_at=published_time,
-        )
-        
-        # 保存到数据库
-        db_obj = await news_heat_score.create(session, heat_score)
-        
-        return db_obj
+            
+            # 计算关键词匹配度得分（通过搜索相似新闻）
+            similar_count = 0
+            for keyword in keywords[:3]:  # 使用前3个关键词进行搜索
+                try:
+                    search_response = await self.heatlink_client.get(
+                        "news", params={"search": keyword["word"]}
+                    )
+                    if search_response and "items" in search_response:
+                        similar_count += len(search_response["items"])
+                except Exception as e:
+                    logger.error(f"关键词搜索失败: {e}")
+            
+            # 归一化相似新闻数量为0-100分
+            keyword_score = min(similar_count / BASELINE_FACTOR * 100, 100)
+            
+            # 计算时效性得分
+            try:
+                published_str = news_item["published_at"]
+                if 'Z' in published_str:
+                    published_str = published_str.replace('Z', '+00:00')
+                elif '+' not in published_str and '-' not in published_str[10:]:
+                    published_str = published_str + '+00:00'
+                
+                published_time = datetime.fromisoformat(published_str)
+                if published_time.tzinfo is None:
+                    published_time = published_time.replace(tzinfo=timezone.utc)
+            except Exception as e:
+                logger.error(f"解析发布时间失败: {e}，使用当前时间作为发布时间")
+                published_time = datetime.now(timezone.utc)
+            
+            hours_passed = (datetime.now(timezone.utc) - published_time).total_seconds() / 3600
+            recency_score = 100 * math.exp(-hours_passed / DECAY_FACTOR)
+            
+            # 计算原平台热度得分
+            platform_score = 0
+            if "metrics" in news_item:
+                platform_score = await self._normalize_platform_score(
+                    news_item["metrics"], news_item["source_id"]
+                )
+            
+            # 计算跨源频率得分
+            cross_source_score = await self._calculate_cross_source_score(
+                news_item["title"], all_news_items
+            )
+            
+            # 获取来源权重
+            source_weight = await self._get_source_weight(news_item["source_id"], session)
+            
+            # 综合计算最终热度
+            final_score = (
+                (W_KEYWORD * keyword_score) +
+                (W_RECENCY * recency_score) +
+                (W_PLATFORM * platform_score) +
+                (W_CROSS_SOURCE * cross_source_score) +
+                (W_SOURCE * source_weight)
+            )
+            
+            # 归一化到0-100
+            final_score = min(max(final_score, 0), 100)
+            
+            # 创建热度评分对象
+            heat_score = HeatScoreCreate(
+                news_id=news_item["id"],
+                source_id=news_item["source_id"],
+                title=news_item["title"],
+                url=news_item["url"],
+                heat_score=final_score,
+                relevance_score=keyword_score,
+                recency_score=recency_score,
+                popularity_score=platform_score,
+                meta_data={
+                    "cross_source_score": cross_source_score,
+                    "source_weight": source_weight,
+                    "keywords": [k["word"] for k in keywords]  # 将关键词列表转换为字符串列表
+                },
+                keywords=keywords,
+                published_at=published_time,
+            )
+            
+            # 保存到数据库
+            db_obj = await news_heat_score.create(session, heat_score)
+            
+            return db_obj
+            
+        except Exception as e:
+            import traceback
+            error_location = traceback.extract_tb(e.__traceback__)[-1]
+            file_name = error_location.filename.split('/')[-1]
+            line_no = error_location.lineno
+            func_name = error_location.name
+            
+            error_msg = (
+                f"新闻热度计算失败:\n"
+                f"错误类型: {type(e).__name__}\n"
+                f"错误信息: {str(e)}\n"
+                f"发生位置: {file_name}:{line_no} in {func_name}\n"
+                f"新闻ID: {news_item.get('id', 'N/A')}\n"
+                f"标题: {news_item.get('title', 'N/A')}\n"
+                f"来源: {news_item.get('source_id', 'N/A')}\n"
+                f"堆栈跟踪:\n{traceback.format_exc()}"
+            )
+            logger.error(error_msg)
+            raise
 
     async def calculate_batch_heat_scores(
         self, news_items: List[Dict[str, Any]], session: AsyncSession
@@ -459,7 +494,22 @@ class NewsHeatScoreService:
                 results[news_item["id"]] = score_obj
                 logger.debug(f"新闻[{news_item['id']}]热度计算完成: {score_obj.heat_score}")
             except Exception as e:
-                logger.error(f"新闻[{news_item['id']}]热度计算失败: {e}")
+                import traceback
+                error_location = traceback.extract_tb(e.__traceback__)[-1]
+                file_name = error_location.filename.split('/')[-1]
+                line_no = error_location.lineno
+                func_name = error_location.name
+                
+                error_msg = (
+                    f"新闻[{news_item['id']}]热度计算失败:\n"
+                    f"错误类型: {type(e).__name__}\n"
+                    f"错误信息: {str(e)}\n"
+                    f"发生位置: {file_name}:{line_no} in {func_name}\n"
+                    f"标题: {news_item.get('title', 'N/A')}\n"
+                    f"来源: {news_item.get('source_id', 'N/A')}\n"
+                    f"堆栈跟踪:\n{traceback.format_exc()}"
+                )
+                logger.error(error_msg)
         
         logger.info(f"批量热度计算完成，成功: {len(results)}, 总数: {len(news_items)}")
         return results
