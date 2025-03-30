@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, Navigate } from 'react-router-dom';
+import { useParams, Navigate, Link, useLocation } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { 
@@ -158,7 +158,18 @@ const calculateCombinedScore = (item) => {
 
 const HotNewsPage = () => {
   const { sourceId } = useParams();
-  const [activeTab, setActiveTab] = useState(sourceId ? 'detail' : 'feed');
+  // 获取URL查询参数
+  const location = useLocation();
+  const queryParams = new URLSearchParams(location.search);
+  const tabParam = queryParams.get('tab');
+  
+  // 根据URL参数初始化activeTab
+  const [activeTab, setActiveTab] = useState(() => {
+    if (sourceId) return 'detail';
+    if (tabParam === 'rankings') return 'rankings';
+    return 'feed'; // 默认标签页
+  });
+  
   const [hotNews, setHotNews] = useState({
     hot_news: [],
     recommended_news: [],
@@ -359,6 +370,17 @@ const HotNewsPage = () => {
       setLoading(false);
     }
   }, []);
+
+  // 当URL参数改变时更新activeTab
+  useEffect(() => {
+    if (sourceId) {
+      setActiveTab('detail');
+    } else if (tabParam === 'rankings') {
+      setActiveTab('rankings');
+    } else if (!tabParam && activeTab !== 'feed') {
+      setActiveTab('feed');
+    }
+  }, [sourceId, tabParam]);
 
   useEffect(() => {
     if (activeTab === 'feed') {
@@ -709,7 +731,8 @@ const HotNewsPage = () => {
           </h1>
           
           <div className="flex flex-wrap justify-end gap-2">
-            <button
+            <Link
+              to="/hot-news"
               className={`px-4 py-2 rounded-md flex items-center text-sm ${
                 activeTab === 'feed'
                   ? 'bg-blue-600 text-white'
@@ -719,9 +742,10 @@ const HotNewsPage = () => {
             >
               <FiStar className="mr-1.5" />
               热门信息流
-            </button>
+            </Link>
           
-            <button
+            <Link
+              to="/hot-news?tab=rankings"
               className={`px-4 py-2 rounded-md flex items-center text-sm ${
                 activeTab === 'rankings'
                   ? 'bg-blue-600 text-white'
@@ -731,20 +755,7 @@ const HotNewsPage = () => {
             >
               <FiBarChart2 className="mr-1.5" />
               热门聚合
-            </button>
-            
-            <button
-              className={`px-4 py-2 rounded-md flex items-center text-sm ${
-                activeTab === 'detail'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-              onClick={() => setActiveTab('detail')}
-              disabled={!sourceId}
-            >
-              <FiExternalLink className="mr-1.5" />
-              详细浏览
-            </button>
+            </Link>
           </div>
         </div>
       </div>

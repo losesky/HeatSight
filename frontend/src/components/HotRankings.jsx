@@ -696,16 +696,6 @@ const HotRankings = () => {
                   </div>
                 )}
                 
-                {sourceData.news.length > 0 && (
-                  <div className="p-2 border-t border-gray-100 bg-gray-50 text-center">
-                    <Link
-                      to={`/hot-news/${source.source_id}`}
-                      className="text-sm text-blue-600 hover:text-blue-800 flex items-center justify-center"
-                    >
-                      查看全部 <FiExternalLink className="ml-1" />
-                    </Link>
-                  </div>
-                )}
               </div>
             );
           })}

@@ -448,14 +448,6 @@ const HotNewsModule = ({ initialSourceId }) => {
             <FiRefreshCw className={`mr-1.5 ${refreshing ? 'animate-spin' : ''}`} />
             刷新
           </button>
-          
-          <Link 
-            to="/hot-news"
-            className="text-gray-600 hover:text-gray-800 flex items-center bg-gray-100 px-3 py-1.5 rounded-md hover:bg-gray-200 transition-colors"
-          >
-            <FiArrowLeft className="mr-1.5" />
-            返回
-          </Link>
         </div>
       </div>
       
