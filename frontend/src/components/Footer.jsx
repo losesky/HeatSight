@@ -17,6 +17,7 @@ const Footer = () => {
           {/* 网站信息 */}
           <div className="col-span-1 md:col-span-1">
             <h3 className="text-xl font-bold mb-4">HeatSight</h3>
+            <h3 className="text-lg font-semibold mb-4">挖掘热点，激发灵感，成就创作</h3>
             <p className="text-gray-300 mb-4">
               热点内容聚合与内容创作助手，帮助创作者快速把握热点、创作优质内容。
             </p>

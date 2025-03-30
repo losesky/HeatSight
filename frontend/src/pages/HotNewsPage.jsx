@@ -380,7 +380,7 @@ const HotNewsPage = () => {
     } else if (!tabParam && activeTab !== 'feed') {
       setActiveTab('feed');
     }
-  }, [sourceId, tabParam]);
+  }, [sourceId, tabParam, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'feed') {
