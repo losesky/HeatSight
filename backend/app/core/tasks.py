@@ -79,11 +79,11 @@ def register_tasks():
         auto_commit=True
     )
     
-    # 更新来源权重 - 每24小时
+    # 更新来源权重 - 每2小时
     scheduler.add_task(
         "update_source_weights",
         heat_score_service.update_source_weights,
-        interval=86400,
+        interval=7200,
         auto_commit=True
     )
     

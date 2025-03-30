@@ -151,30 +151,100 @@ class NewsHeatScoreService:
         return words
 
     async def _extract_keywords(self, title: str, content: str = "") -> List[Dict[str, Any]]:
-        """使用中英文分词技术提取新闻关键词"""
-        # 合并标题和内容，标题权重更高所以重复一次
-        text = f"{title} {title} {content}"
+        """使用中英文分词技术提取新闻关键词和短语"""
+        # 合并标题和内容，标题权重更高所以重复三次
+        text = f"{title} {title} {title} {content}"
         
+        result = []
         if self._is_chinese(text):
-            # 中文关键词提取
-            keywords = jieba.analyse.textrank(text, topK=5, withWeight=True)
+            # 1. 提取关键短语（2-3个词的组合）
+            import jieba.analyse
+            # 设置停用词
+            jieba.analyse.set_stop_words(self.cn_stopwords)
+            
+            # 使用TextRank提取关键短语
+            keywords = jieba.analyse.textrank(
+                text,
+                topK=10,  # 提取更多关键词以便组合
+                withWeight=True,
+                allowPOS=('ns', 'n', 'vn', 'v', 'nr')  # 允许名词、动词、人名、地名
+            )
+            
+            # 将单个关键词组合成短语
+            words = list(jieba.cut(title))  # 主要从标题中提取
+            phrases = []
+            for i in range(len(words)-1):
+                if len(words[i]) > 1 and len(words[i+1]) > 1:  # 只组合双字及以上的词
+                    phrase = words[i] + words[i+1]
+                    if 4 <= len(phrase) <= 8:  # 控制短语长度
+                        phrases.append(phrase)
+            
+            # 添加关键词
+            for word, weight in keywords:
+                if (word not in self.cn_stopwords and 
+                    len(word.strip()) > 1):  # 只保留双字及以上的词
+                    result.append({
+                        "word": word,
+                        "weight": float(weight),
+                        "type": "keyword"
+                    })
+            
+            # 添加短语
+            for phrase in phrases[:5]:  # 限制短语数量
+                # 计算短语权重（基于其包含的关键词权重）
+                phrase_weight = 0
+                for word, weight in keywords:
+                    if word in phrase:
+                        phrase_weight += weight
+                result.append({
+                    "word": phrase,
+                    "weight": float(phrase_weight or 0.5),
+                    "type": "phrase"
+                })
+            
+            # 2. 尝试提取主题（通过标题中的关键信息组合）
+            if "：" in title or ":" in title:
+                parts = title.replace(":", "：").split("：")
+                if len(parts) >= 2:
+                    topic = parts[0].strip()
+                    if 4 <= len(topic) <= 20:  # 控制主题长度
+                        result.append({
+                            "word": topic,
+                            "weight": 1.0,  # 主题权重最高
+                            "type": "topic"
+                        })
         else:
-            # 英文关键词提取
+            # 英文文本处理
             words = self._tokenize_text(text)
             # 计算词频
             from collections import Counter
             word_freq = Counter(words)
             total = sum(word_freq.values())
-            # 转换为带权重的关键词列表
-            keywords = [(word, count/total) for word, count in word_freq.most_common(5)]
-        
-        # 转换为所需的数据结构
-        result = []
-        for word, weight in keywords:
-            if (word not in self.cn_stopwords and 
-                word not in self.en_stopwords and 
-                len(word.strip()) > 0):
-                result.append({"word": word, "weight": float(weight)})
+            
+            # 提取单词和短语
+            phrases = []
+            for i in range(len(words)-1):
+                if len(words[i]) > 2 and len(words[i+1]) > 2:  # 忽略太短的单词
+                    phrase = words[i] + " " + words[i+1]
+                    phrases.append(phrase)
+            
+            # 添加关键词
+            for word, count in word_freq.most_common(5):
+                if word not in self.en_stopwords and len(word) > 2:
+                    result.append({
+                        "word": word,
+                        "weight": float(count/total),
+                        "type": "keyword"
+                    })
+            
+            # 添加短语
+            phrase_freq = Counter(phrases)
+            for phrase, count in phrase_freq.most_common(3):
+                result.append({
+                    "word": phrase,
+                    "weight": float(count/total),
+                    "type": "phrase"
+                })
         
         return result
 
@@ -583,10 +653,10 @@ class NewsHeatScoreService:
             # 获取最近一段时间内的热门新闻
             heat_scores = await news_heat_score.get_top_heat_scores(
                 session, 
-                limit=100, 
+                limit=1000,  # 增加获取的新闻数量到1000条
                 skip=0,
-                min_score=30,
-                max_age_hours=24 * 7  # 最近一周的数据
+                min_score=20,  # 降低热度分数阈值到20
+                max_age_hours=12  # 只获取最近12小时的新闻
             )
             
             # 提取所有关键词并计算频率
@@ -595,6 +665,7 @@ class NewsHeatScoreService:
                 for keyword_item in score.keywords:
                     word = keyword_item.get("word")
                     weight = keyword_item.get("weight", 0.5)
+                    word_type = keyword_item.get("type", "keyword")
                     
                     if word:
                         if word not in keyword_counts:
@@ -602,7 +673,8 @@ class NewsHeatScoreService:
                                 "count": 0,
                                 "total_weight": 0,
                                 "total_heat": 0,
-                                "sources": set()
+                                "sources": set(),
+                                "type": word_type
                             }
                         
                         keyword_counts[word]["count"] += 1
@@ -613,21 +685,41 @@ class NewsHeatScoreService:
             # 计算并存储关键词热度
             keyword_heat = []
             for word, data in keyword_counts.items():
-                # 只关注出现在多个来源中的关键词
-                if len(data["sources"]) >= 2 and data["count"] >= 3:
-                    # 热度计算公式 = 出现次数 * 平均权重 * 平均热度 * 来源数量
-                    heat = (
+                # 根据类型调整过滤条件
+                should_include = False
+                if data["type"] == "topic":
+                    # 主题至少在2个来源出现
+                    should_include = len(data["sources"]) >= 2
+                elif data["type"] == "phrase":
+                    # 短语至少在2个来源出现且出现2次以上
+                    should_include = len(data["sources"]) >= 2 and data["count"] >= 2
+                else:
+                    # 关键词至少在3个来源出现且出现1次以上
+                    should_include = len(data["sources"]) >= 3 and data["count"] >= 1
+                
+                if should_include:
+                    # 根据类型调整热度计算
+                    base_heat = (
                         data["count"] * 
                         (data["total_weight"] / data["count"]) * 
                         (data["total_heat"] / data["count"]) * 
                         len(data["sources"])
-                    ) / 1000  # 归一化
+                    )
+                    
+                    # 不同类型的权重调整
+                    if data["type"] == "topic":
+                        heat = base_heat / 500  # 主题热度权重更高
+                    elif data["type"] == "phrase":
+                        heat = base_heat / 750  # 短语热度权重适中
+                    else:
+                        heat = base_heat / 1000  # 关键词热度权重标准
                     
                     keyword_heat.append({
                         "keyword": word,
                         "heat": min(heat, 100),  # 上限100
                         "count": data["count"],
                         "sources": list(data["sources"]),
+                        "type": data["type"],  # 添加类型信息
                         "updated_at": datetime.now(timezone.utc).isoformat()
                     })
             
@@ -635,14 +727,14 @@ class NewsHeatScoreService:
             if keyword_heat:
                 # 按热度排序
                 keyword_heat.sort(key=lambda x: x["heat"], reverse=True)
-                # 只保留前100个
-                top_keywords = keyword_heat[:100]
+                # 保留前300个关键词/短语/主题
+                top_keywords = keyword_heat[:300]
                 
                 # 存储到Redis
                 cache_key = f"{CACHE_PREFIX}:keywords"
                 await redis_manager.set(cache_key, top_keywords, expire=CACHE_TTL * 2)
                 
-                logger.info(f"✨ 关键词热度更新完成，共更新 {len(top_keywords)} 个关键词")
+                logger.info(f"✨ 关键词热度更新完成，共更新 {len(top_keywords)} 个关键词/短语/主题")
                 return top_keywords
             else:
                 logger.warning("⚠️ 未找到足够的关键词数据")
@@ -708,73 +800,121 @@ class NewsHeatScoreService:
                         # 分析新闻项的互动数据
                         for item in news_items:
                             metrics = item.get("metrics", {})
+                            # 更新互动数据计算逻辑
+                            view_count = float(metrics.get("view_count", 0))
+                            like_count = float(metrics.get("like_count", 0))
+                            comment_count = float(metrics.get("comment_count", 0))
+                            share_count = float(metrics.get("share_count", 0))
+                            
+                            # 计算互动分数，不再添加基础分
                             engagement = (
-                                metrics.get("view_count", 0) + 
-                                metrics.get("like_count", 0) * 3 + 
-                                metrics.get("comment_count", 0) * 5 + 
-                                metrics.get("share_count", 0) * 10
+                                view_count * 1 +      # 浏览量权重
+                                like_count * 3 +      # 点赞权重
+                                comment_count * 5 +   # 评论权重
+                                share_count * 10      # 分享权重
                             )
-                            avg_engagement += engagement
+                            
+                            # 根据来源类型设置不同的基准值
+                            baseline = {
+                                "weibo": 10000,      # 微博基准值高
+                                "zhihu": 5000,       # 知乎基准值中等
+                                "bilibili": 3000,    # B站基准值适中
+                                "toutiao": 8000,     # 头条基准值较高
+                                "36kr": 2000,        # 36氪基准值较低
+                                "default": 1000      # 默认基准值最低
+                            }.get(source_id, 1000)
+                            
+                            # 标准化互动分数
+                            normalized_engagement = min((engagement / baseline) * 100, 100)
+                            avg_engagement += normalized_engagement
                         
                         if total_items > 0:
                             avg_engagement /= total_items
                         
-                        # 计算更新频率分数（基于最新文章的时间间隔）
+                        # 计算更新频率分数
                         update_frequency = 50  # 默认值
-                        if total_items >= 2:
+                        if total_items >= 5:  # 至少需要5篇文章才能计算更新频率
                             try:
-                                # 获取最新两篇文章的时间差
-                                latest_str = news_items[0]["published_at"]
-                                second_latest_str = news_items[1]["published_at"]
-                                
-                                # 处理不同格式的ISO日期字符串 - 最新文章
-                                if 'Z' in latest_str:
-                                    latest_str = latest_str.replace('Z', '+00:00')
-                                elif '+' not in latest_str and '-' not in latest_str[10:]:
-                                    latest_str = latest_str + '+00:00'
-                                
-                                # 处理不同格式的ISO日期字符串 - 第二新文章
-                                if 'Z' in second_latest_str:
-                                    second_latest_str = second_latest_str.replace('Z', '+00:00')
-                                elif '+' not in second_latest_str and '-' not in second_latest_str[10:]:
-                                    second_latest_str = second_latest_str + '+00:00'
+                                # 获取最新的5篇文章的时间
+                                timestamps = []
+                                for item in news_items[:5]:
+                                    pub_str = item["published_at"]
                                     
-                                # 解析日期并确保是UTC时区
-                                latest_time = datetime.fromisoformat(latest_str)
-                                second_latest_time = datetime.fromisoformat(second_latest_str)
+                                    # 标准化时间字符串
+                                    if 'Z' in pub_str:
+                                        pub_str = pub_str.replace('Z', '+00:00')
+                                    elif '+' not in pub_str and '-' not in pub_str[10:]:
+                                        pub_str = pub_str + '+00:00'
+                                    
+                                    # 解析时间
+                                    pub_time = datetime.fromisoformat(pub_str)
+                                    if pub_time.tzinfo is None:
+                                        pub_time = pub_time.replace(tzinfo=timezone.utc)
+                                    
+                                    timestamps.append(pub_time)
                                 
-                                # 如果没有时区信息，添加UTC时区
-                                if latest_time.tzinfo is None:
-                                    latest_time = latest_time.replace(tzinfo=timezone.utc)
-                                if second_latest_time.tzinfo is None:
-                                    second_latest_time = second_latest_time.replace(tzinfo=timezone.utc)
+                                # 计算平均时间间隔（小时）
+                                intervals = []
+                                for i in range(len(timestamps)-1):
+                                    interval = (timestamps[i] - timestamps[i+1]).total_seconds() / 3600
+                                    intervals.append(interval)
                                 
-                                # 计算小时差
-                                hours_diff = (latest_time - second_latest_time).total_seconds() / 3600
+                                avg_interval = sum(intervals) / len(intervals)
                                 
-                                # 更新越频繁，分数越高（最高100）
-                                if hours_diff <= 1:  # 每小时更新
+                                # 根据平均更新间隔计算频率分数
+                                if avg_interval <= 0.0833:     # 平均5分钟更新一次 (5/60=0.0833小时)
                                     update_frequency = 100
-                                elif hours_diff <= 3:  # 每3小时更新
+                                elif avg_interval <= 0.1667:   # 平均10分钟更新一次 (10/60=0.1667小时)
                                     update_frequency = 90
-                                elif hours_diff <= 6:  # 每6小时更新
+                                elif avg_interval <= 0.5:      # 平均30分钟更新一次 (30/60=0.5小时)
                                     update_frequency = 80
-                                elif hours_diff <= 12:  # 每12小时更新
+                                elif avg_interval <= 1:        # 平均60分钟更新一次
                                     update_frequency = 70
-                                elif hours_diff <= 24:  # 每天更新
+                                elif avg_interval <= 2:        # 平均120分钟更新一次
                                     update_frequency = 60
-                                else:
+                                elif avg_interval <= 4:        # 平均4小时更新一次
                                     update_frequency = 50
+                                else:                         # 更新较慢
+                                    update_frequency = 40
                             except Exception as e:
                                 logger.warning(f"⚠️ 计算更新频率失败: {e}")
                                 import traceback
                                 logger.debug(traceback.format_exc())
                         
-                        # 综合计算来源权重
-                        source_weight = min(
-                            (avg_engagement / 1000) * 0.7 + update_frequency * 0.3, 
-                            100
+                        # 更新来源权重计算公式
+                        # 基础权重：根据来源类型分配
+                        base_weight = {
+                            "weibo": 90,  # 微博热搜
+                            "zhihu": 85,  # 知乎热榜
+                            "toutiao": 85,  # 头条热榜
+                            "baidu": 85,  # 百度热搜
+                            "bilibili": 80,  # B站热门
+                            "douyin": 80,  # 抖音热点
+                            "kuaishou": 75,  # 快手热点
+                            "36kr": 75,  # 科技媒体
+                            "wallstreetcn": 75,  # 华尔街见闻
+                            "thepaper": 70,  # 澎湃新闻
+                            "ithome": 70,  # IT之家
+                            "zaobao": 70,  # 联合早报
+                            "bbc_world": 85,  # BBC国际新闻
+                            "bloomberg": 85,  # 彭博新闻
+                            "v2ex": 65,  # 科技社区
+                            "hackernews": 70,  # 科技新闻
+                            "github": 60,  # 开发平台
+                        }.get(source_id, 50)  # 其他来源默认50分
+                        
+                        # 动态权重：基于互动度和更新频率
+                        engagement_score = min((avg_engagement / 1000), 100)  # 互动度得分
+                        
+                        # 综合计算最终权重
+                        source_weight = (
+                            base_weight * 0.5 +  # 基础权重占50%
+                            engagement_score * 0.3 +  # 互动度占30%
+                            update_frequency * 0.2  # 更新频率占20%
                         )
+                        
+                        # 确保权重在合理范围内
+                        source_weight = max(min(source_weight, 100), 10)
                         
                         # 存储来源统计数据
                         source_stats[source_id] = {

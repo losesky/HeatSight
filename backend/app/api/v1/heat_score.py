@@ -6,12 +6,13 @@ from pydantic import BaseModel
 import asyncio
 
 from app.db.session import get_db_auto_commit, async_session_maker
-from app.services.news_heat_score_service import heat_score_service
+from app.services.news_heat_score_service import heat_score_service, CACHE_PREFIX
 from app.schemas.news_heat_score import (
     HeatScoreResponse,
     HeatScoreBulkResponse,
     HeatScoreDetailedBulkResponse,
 )
+from app.db.redis import redis_manager
 
 
 router = APIRouter()
@@ -147,3 +148,76 @@ async def update_heat_scores(background_tasks: BackgroundTasks):
     except Exception as e:
         logger.error(f"启动热度更新任务失败: {e}")
         raise HTTPException(status_code=500, detail=f"启动热度更新任务失败: {str(e)}")
+
+
+@router.get("/keywords")
+async def get_hot_keywords(
+    limit: int = Query(50, ge=1, le=100, description="返回关键词数量"),
+    min_heat: float = Query(0, ge=0, le=100, description="最低热度阈值"),
+) -> List[Dict[str, Any]]:
+    """
+    获取热门关键词列表。
+    
+    返回按热度排序的关键词列表，每个关键词包含热度分数、出现次数和来源等信息。
+    """
+    try:
+        # 从Redis缓存获取关键词数据
+        cache_key = f"{CACHE_PREFIX}:keywords"
+        cached_data = await redis_manager.get(cache_key)
+        
+        if not cached_data:
+            logger.warning("关键词缓存未找到")
+            return []
+            
+        # 过滤并排序关键词
+        keywords = [
+            kw for kw in cached_data 
+            if kw.get("heat", 0) >= min_heat
+        ]
+        
+        # 返回指定数量的关键词
+        return keywords[:limit]
+        
+    except Exception as e:
+        logger.error(f"获取热门关键词失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取热门关键词失败: {str(e)}")
+
+
+@router.get("/source-weights")
+async def get_source_weights(
+    min_weight: float = Query(0, ge=0, le=100, description="最低权重阈值"),
+) -> Dict[str, Any]:
+    """
+    获取新闻来源权重列表。
+    
+    返回所有新闻来源的权重信息，包括权重分数、平均互动量和更新频率等数据。
+    结果按权重降序排列。
+    """
+    try:
+        # 从Redis缓存获取来源权重数据
+        cache_key = f"{CACHE_PREFIX}:source_weights"
+        cached_data = await redis_manager.get(cache_key)
+        
+        if not cached_data:
+            logger.warning("来源权重缓存未找到")
+            return {}
+            
+        # 过滤低于阈值的来源
+        filtered_sources = {
+            source_id: data 
+            for source_id, data in cached_data.items()
+            if data.get("weight", 0) >= min_weight
+        }
+        
+        # 按weight降序排序
+        sorted_sources = dict(sorted(
+            filtered_sources.items(),
+            key=lambda x: x[1].get("weight", 0),
+            reverse=True
+        ))
+        
+        return sorted_sources
+        
+    except Exception as e:
+        logger.error(f"获取来源权重失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取来源权重失败: {str(e)}")
