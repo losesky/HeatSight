@@ -5,6 +5,8 @@ from loguru import logger
 from pydantic import BaseModel
 import asyncio
 from datetime import datetime, timezone
+from sqlalchemy import select, or_
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.session import get_db_auto_commit, async_session_maker
 from app.services.news_heat_score_service import heat_score_service, CACHE_PREFIX
@@ -13,6 +15,7 @@ from app.schemas.news_heat_score import (
     HeatScoreBulkResponse,
     HeatScoreDetailedBulkResponse,
 )
+from app.models.news_heat_score import NewsHeatScore
 from app.db.redis import redis_manager
 
 
@@ -71,6 +74,7 @@ async def get_top_news(
     skip: int = Query(0, description="Number of items to skip"),
     min_score: Optional[float] = Query(30.0, description="Minimum heat score"),
     max_age_hours: Optional[int] = Query(72, description="Maximum age in hours"),
+    category: Optional[str] = Query(None, description="Filter news by category. Multiple categories can be specified as comma-separated values, e.g. 'news,social,video'"),
     db: AsyncSession = Depends(get_db_auto_commit)
 ):
     """
@@ -82,9 +86,10 @@ async def get_top_news(
     - **skip**: 分页偏移量
     - **min_score**: 最低热度分数阈值
     - **max_age_hours**: 最大时效性（小时）
+    - **category**: 按新闻分类筛选，支持多分类（逗号分隔，如'news,social,video'）
     """
     try:
-        logger.info(f"API 请求: 获取热门新闻 limit={limit}, skip={skip}, min_score={min_score}, max_age_hours={max_age_hours}")
+        logger.info(f"API 请求: 获取热门新闻 limit={limit}, skip={skip}, min_score={min_score}, max_age_hours={max_age_hours}, category={category}")
         
         # 调用服务层获取数据
         news_list = await heat_score_service.get_top_news(
@@ -92,6 +97,7 @@ async def get_top_news(
             skip=skip, 
             min_score=min_score,
             max_age_hours=max_age_hours,
+            category=category,
             session=db
         )
         
@@ -317,3 +323,117 @@ async def update_source_weights(background_tasks: BackgroundTasks):
     except Exception as e:
         logger.error(f"启动来源权重更新任务失败: {e}")
         raise HTTPException(status_code=500, detail=f"启动来源权重更新任务失败: {str(e)}")
+
+@router.post("/update-categories", response_model=Dict[str, Any])
+async def update_news_categories(background_tasks: BackgroundTasks):
+    """
+    更新所有新闻热度分数记录的分类信息。
+    
+    此接口会在后台启动分类更新任务，检查所有没有分类信息的热度记录，
+    并根据来源ID推断分类。任务完成后，更新后的分类信息将被保存到数据库。
+    """
+    try:
+        background_tasks.add_task(run_category_update)
+        return {
+            "status": "success",
+            "message": "分类信息更新任务已启动",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"启动分类更新任务失败: {e}")
+        raise HTTPException(status_code=500, detail=f"启动分类更新任务失败: {str(e)}")
+
+
+async def run_category_update():
+    """在独立会话中运行分类更新任务"""
+    async with async_session_maker() as session:
+        try:
+            # 动态获取来源-分类映射关系
+            source_categories = {}
+            
+            # 通过 HeatLink API 获取源分类信息
+            try:
+                # 直接从服务获取源信息
+                sources_data = await heat_score_service.heatlink_client.get_sources()
+                
+                # 处理API返回的不同格式
+                if isinstance(sources_data, dict):
+                    sources_list = sources_data.get("sources", [])
+                else:
+                    sources_list = sources_data
+                
+                # 构建 source_id 到 category 的映射
+                for source in sources_list:
+                    if "source_id" in source and "category" in source:
+                        source_categories[source["source_id"]] = source["category"]
+                
+                logger.info(f"从 HeatLink API 获取到 {len(source_categories)} 个来源的分类信息")
+                
+                # 如果没有获取到任何分类信息，使用默认的回退映射
+                if not source_categories:
+                    logger.warning("从 API 获取的分类信息为空，使用默认映射")
+                    source_categories = {
+                        "weibo": "social",
+                        "zhihu": "knowledge",
+                        "toutiao": "news",
+                        "baidu": "search",
+                        "bilibili": "video",
+                        "douyin": "video",
+                        "36kr": "technology"
+                    }
+            except Exception as e:
+                logger.error(f"获取来源分类信息失败，使用默认映射: {e}")
+                # 使用基本的默认映射作为回退
+                source_categories = {
+                    "weibo": "social",
+                    "zhihu": "knowledge",
+                    "toutiao": "news",
+                    "baidu": "search",
+                    "bilibili": "video",
+                    "douyin": "video"
+                }
+            
+            # 查询所有需要更新的记录
+            stmt = select(NewsHeatScore).where(
+                or_(
+                    NewsHeatScore.meta_data.is_(None),
+                    ~NewsHeatScore.meta_data.cast(JSONB).op('?')('category')
+                )
+            ).limit(5000)  # 限制一次处理的记录数量
+            
+            result = await session.execute(stmt)
+            records = result.scalars().all()
+            
+            updated_count = 0
+            for record in records:
+                # 获取来源ID
+                source_id = record.source_id
+                
+                # 推断分类
+                category = source_categories.get(source_id, "others")
+                
+                # 更新meta_data
+                if record.meta_data is None:
+                    record.meta_data = {"category": category}
+                else:
+                    record.meta_data["category"] = category
+                
+                session.add(record)
+                updated_count += 1
+                
+                # 每100条记录提交一次，减少数据库压力
+                if updated_count % 100 == 0:
+                    await session.commit()
+                    logger.info(f"已更新 {updated_count} 条记录的分类信息")
+            
+            # 提交最后的更改
+            if updated_count % 100 != 0:
+                await session.commit()
+            
+            logger.info(f"分类更新任务完成，共更新 {updated_count} 条记录")
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"分类更新任务失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise

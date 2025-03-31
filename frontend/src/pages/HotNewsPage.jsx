@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Navigate, Link, useLocation } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -116,7 +116,7 @@ const calculateSimilarity = (title1, title2) => {
 };
 
 // 添加计算时效性分数的函数
-const calculateRecencyScore = (publishedAt, maxBoost = 20) => {
+const calculateRecencyScore = (publishedAt, maxBoost = 30) => {
   if (!publishedAt) return 0;
   
   try {
@@ -129,14 +129,18 @@ const calculateRecencyScore = (publishedAt, maxBoost = 20) => {
     // 计算发布时间到现在的小时数
     const hoursSincePublished = (now - publishTime) / (1000 * 60 * 60);
     
-    // 24小时内的新闻获得最大加成，之后线性衰减
-    // 48小时后不再有时效性加成
+    // 时效性计算逻辑 - 平滑的两段式线性衰减
     if (hoursSincePublished <= 24) {
-      return maxBoost * (1 - (hoursSincePublished / 24));
+      // 0-24小时：从满分(30分)线性递减到半分(15分)
+      // 例如：0小时=30分，12小时=22.5分，24小时=15分
+      return maxBoost - (maxBoost / 2) * (hoursSincePublished / 24);
     } else if (hoursSincePublished <= 48) {
-      return maxBoost * (1 - (hoursSincePublished / 24)) / 2;
+      // 24-48小时：从半分(15分)线性递减到0分
+      // 例如：24小时=15分，36小时=7.5分，48小时=0分
+      return (maxBoost / 2) * (1 - ((hoursSincePublished - 24) / 24));
     }
     
+    // 48小时后不再有时效性加成
     return 0;
   } catch (e) {
     console.warn('计算时效性分数失败:', e);
@@ -177,40 +181,97 @@ const HotNewsPage = () => {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [selectedCategories, setSelectedCategories] = useState(['all']); // 改为多选
   const [viewMode, setViewMode] = useState('list'); // 'list' or 'grid'
   const [refreshing, setRefreshing] = useState(false);
   const [newsHeatMap, setNewsHeatMap] = useState({}); // Add state for heat scores
+  const [sourceCategoryMap, setSourceCategoryMap] = useState({}); // 添加来源-分类映射状态
+  const [availableCategories, setAvailableCategories] = useState([]); // 添加可用分类状态
+  const [sourceNameMap, setSourceNameMap] = useState({}); // 添加来源ID到中文名称的映射
 
   // If we have a sourceId but the active tab is not detail, set it to detail
   if (sourceId && activeTab !== 'detail') {
     setActiveTab('detail');
   }
   
-  const fetchHotNews = useCallback(async () => {
+  const fetchHotNews = useCallback(async (categoryFilters = null) => {
     setLoading(true);
     setError(null);
     
     try {
-      // 请求更多数据
-      const topNewsResponse = await newsHeatApi.getTopNews({
-        limit: 300, // 大幅增加请求数量
+      // 请求更多数据，添加category参数
+      const params = {
+        limit: 300,
         include_categories: true
-      });
+      };
+      
+      // 处理分类过滤参数
+      // 只有当分类不为null且不包含'all'时才添加category参数
+      if (categoryFilters) {
+        // 如果输入是字符串(单个分类)，转换为数组
+        const categories = Array.isArray(categoryFilters) ? categoryFilters : [categoryFilters];
+        
+        if (!categories.includes('all') && categories.length > 0) {
+          // 如果有多个分类，以逗号分隔拼接
+          params.category = categories.join(',');
+        }
+      }
+      
+      const topNewsResponse = await newsHeatApi.getTopNews(params);
       
       let processedData;
       
       if (Array.isArray(topNewsResponse)) {
         console.log(`API返回了${topNewsResponse.length}条热门新闻数据`);
         
+        // 使用来源推断分类的映射
+        const defaultSourceCategories = {
+          'weibo': 'social',
+          'zhihu': 'knowledge',
+          'toutiao': 'news',
+          'baidu': 'search',
+          'bilibili': 'video',
+          'douyin': 'video',
+          '36kr': 'technology',
+          'wallstreetcn': 'finance',
+          'ithome': 'technology',
+          'thepaper': 'news',
+          'zaobao': 'news',
+          'sina': 'news',
+          'qq': 'news',
+          '163': 'news',
+          'sohu': 'news',
+          'ifeng': 'news',
+          'bbc_world': 'world',
+          'bloomberg': 'finance'
+        };
+        
         // 清洗数据：清洗标题和URL
-        const cleanedNewsData = topNewsResponse.map(item => ({
-          ...item,
-          title: cleanTitle(item.title),
-          url: cleanUrl(item.url),
-          combined_score: calculateCombinedScore(item), // 计算综合分数
-          title_fingerprint: generateTitleFingerprint(item.title) // 预先生成指纹
-        }));
+        const cleanedNewsData = topNewsResponse.map(item => {
+          // 获取原始分类或从meta_data中提取
+          let category = item.category;
+          
+          // 如果没有直接分类但有meta_data，从meta_data中提取
+          if (!category && item.meta_data && typeof item.meta_data === 'object') {
+            category = item.meta_data.category;
+          }
+          
+          // 如果仍然没有分类，根据来源推断
+          if (!category && item.source_id) {
+            category = Object.keys(sourceCategoryMap).length > 0 
+              ? sourceCategoryMap[item.source_id] || 'others'
+              : defaultSourceCategories[item.source_id] || 'others';
+          }
+          
+          return {
+            ...item,
+            title: cleanTitle(item.title),
+            url: cleanUrl(item.url),
+            category: category, // 确保保留或推断分类信息
+            combined_score: calculateCombinedScore(item), // 计算综合分数
+            title_fingerprint: generateTitleFingerprint(item.title) // 预先生成指纹
+          };
+        });
         
         // ====== 根据用户建议实现更直接的去重策略 ======
         
@@ -269,7 +330,7 @@ const HotNewsPage = () => {
         // 3. 最后针对显示进行跨源去重
         const finalNewsList = [];
         const titleFingerprints = new Set(); // 用于标题去重
-        const similarityThreshold = 0.8; // 相似度阈值
+        const similarityThreshold = 0.7; // 相似度阈值
         
         // 对排序好的新闻按标题相似度去重
         allDeduplicatedNews.forEach(item => {
@@ -294,11 +355,35 @@ const HotNewsPage = () => {
         // 注意最终去重结果数量，但前端仍然会限制最多显示50条
         console.log(`去重后剩余${finalNewsList.length}条新闻数据，前端将显示最多50条`);
         
-        // 将数组数据转换成我们需要的格式
+        // 根据新闻条目的 category 属性将它们组织成分类
+        const categoriesMap = {};
+        
+        // 遍历去重后的新闻，按分类进行分组
+        finalNewsList.forEach(newsItem => {
+          // 使用已有分类，如果没有则使用'others'
+          const category = newsItem.category || 'others';
+          
+          if (!categoriesMap[category]) {
+            categoriesMap[category] = [];
+          }
+          categoriesMap[category].push(newsItem);
+        });
+        
+        // 排除空分类和只有少量新闻的分类(小于2条)
+        const filteredCategories = {};
+        Object.keys(categoriesMap).forEach(category => {
+          if (categoriesMap[category].length >= 2) {
+            filteredCategories[category] = categoriesMap[category];
+          }
+        });
+        
+        console.log(`从新闻数据中提取了${Object.keys(filteredCategories).length}个分类`);
+        
+        // 将数组数据转换成我们需要的格式，包含分类信息
         processedData = {
           hot_news: finalNewsList,
           recommended_news: [],
-          categories: {}
+          categories: filteredCategories
         };
         
         // 从热度分数创建热度映射
@@ -369,6 +454,7 @@ const HotNewsPage = () => {
     } finally {
       setLoading(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 当URL参数改变时更新activeTab
@@ -382,37 +468,146 @@ const HotNewsPage = () => {
     }
   }, [sourceId, tabParam, activeTab]);
 
+  // 使用ref存储当前选中的分类，避免无限循环
+  const selectedCategoriesRef = useRef(selectedCategories);
+  
+  // 当selectedCategories变化时更新ref
   useEffect(() => {
-    if (activeTab === 'feed') {
-      fetchHotNews();
+    selectedCategoriesRef.current = selectedCategories;
+  }, [selectedCategories]);
+  
+  // 组件加载时获取所有可用分类
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        // 先获取所有来源分类
+        const response = await newsHeatApi.getSourceWeights();
+        if (response && response.sources && Array.isArray(response.sources)) {
+          // 提取所有来源的分类信息并去重
+          const categoriesSet = new Set();
+          
+          response.sources.forEach(source => {
+            if (source.category && source.category !== 'unknown') {
+              categoriesSet.add(source.category);
+            }
+          });
+          
+          // 将Set转换为数组，并按字母顺序排序
+          const categoriesArray = Array.from(categoriesSet).sort();
+          setAvailableCategories(categoriesArray);
+          console.log('从API获取的可用分类:', categoriesArray);
+          
+          // 获取完分类后，加载热门信息
+          if (activeTab === 'feed') {
+            fetchHotNews(selectedCategories);
+          }
+        }
+      } catch (error) {
+        console.error('获取可用分类失败:', error);
+        // 设置默认分类作为回退
+        setAvailableCategories([
+          'technology', 'finance', 'news', 'social', 
+          'entertainment', 'sports', 'knowledge', 'video'
+        ]);
+        
+        // 即使获取分类失败，也尝试加载热门信息
+        if (activeTab === 'feed') {
+          fetchHotNews(selectedCategories);
+        }
+      }
+    };
+    
+    fetchInitialData();
+  }, [activeTab, fetchHotNews, selectedCategories]); // 添加activeTab、fetchHotNews和selectedCategories作为依赖项
+  
+  // 只有当activeTab变化时才触发加载
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (activeTab === 'feed' && availableCategories.length > 0) {
+      fetchHotNews(selectedCategoriesRef.current);
     }
-  }, [activeTab, fetchHotNews]);
+  }, [activeTab, fetchHotNews, availableCategories]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await fetchHotNews();
+    await fetchHotNews(selectedCategories); // 使用当前选中的所有分类刷新
     setRefreshing(false);
+  };
+  
+  // 处理分类选择 - 支持多选
+  const toggleCategory = (category) => {
+    let newCategories;
+    if (category === 'all') {
+      // 如果选择"全部"，则清除其他所有选择
+      newCategories = ['all'];
+    } else {
+      // 如果当前选择包含"全部"，则清除"全部"并选择当前分类
+      if (selectedCategories.includes('all')) {
+        newCategories = [category];
+      } else if (selectedCategories.includes(category)) {
+        // 如果当前分类已被选中，则取消选择
+        const filtered = selectedCategories.filter(c => c !== category);
+        // 如果取消后没有选中任何分类，则默认选择"全部"
+        newCategories = filtered.length === 0 ? ['all'] : filtered;
+      } else {
+        // 否则添加当前分类到选中列表
+        newCategories = [...selectedCategories, category];
+      }
+    }
+    
+    setSelectedCategories(newCategories);
+    fetchHotNews(newCategories); // 获取多个分类的新闻
   };
 
   // Get all available categories from the hot news data
   const getCategories = () => {
+    // 优先使用API获取的可用分类
+    if (availableCategories.length > 0) {
+      return availableCategories;
+    }
+    
+    // 回退到从热门新闻数据中提取的分类
     const categories = Object.keys(hotNews.categories || {});
     return categories;
   };
   
-  // Filter hot news based on active category
+  // Filter hot news based on selected categories
   const getFilteredNews = () => {
-    const maxDisplayCount = 20; // 前端限制最多显示50条记录
-    let newsData = [];
+    const maxDisplayCount = 20; // 限制最多显示20条记录
     
-    if (activeCategory === 'all') {
-      newsData = hotNews.hot_news || [];
-    } else if (hotNews.categories && hotNews.categories[activeCategory]) {
-      newsData = hotNews.categories[activeCategory];
+    // 如果选择了"全部"
+    if (selectedCategories.includes('all')) {
+      return (hotNews.hot_news || []).slice(0, maxDisplayCount);
     }
     
-    // 确保只返回前50条数据
-    return newsData.slice(0, maxDisplayCount);
+    // 如果选择了特定分类
+    let combinedNews = [];
+    
+    // 合并选中分类的所有新闻
+    selectedCategories.forEach(category => {
+      if (hotNews.categories && hotNews.categories[category]) {
+        combinedNews = [...combinedNews, ...hotNews.categories[category]];
+      }
+    });
+    
+    // 去重 - 根据新闻ID
+    const uniqueIds = new Set();
+    const uniqueNews = [];
+    
+    combinedNews.forEach(item => {
+      const newsId = item.id || item.news_id;
+      if (newsId && !uniqueIds.has(newsId)) {
+        uniqueIds.add(newsId);
+        uniqueNews.push(item);
+      }
+    });
+    
+    // 按综合分数排序
+    uniqueNews.sort((a, b) => b.combined_score - a.combined_score);
+    
+    // 返回前20条
+    return uniqueNews.slice(0, maxDisplayCount);
   };
 
   // Get category display names
@@ -427,7 +622,22 @@ const HotNewsPage = () => {
       'education': '教育',
       'gaming': '游戏',
       'travel': '旅游',
-      'fashion': '时尚'
+      'fashion': '时尚',
+      'politics': '政治',
+      'economy': '经济',
+      'health': '健康',
+      'science': '科学',
+      'world': '国际',
+      'culture': '文化',
+      'military': '军事',
+      'automotive': '汽车',
+      'realestate': '房产',
+      'food': '美食',
+      'video': '视频',
+      'knowledge': '知识',
+      'search': '搜索',
+      'lifestyle': '生活方式',
+      'others': '其他'
     };
     
     return categoryNames[categoryKey] || categoryKey;
@@ -445,18 +655,86 @@ const HotNewsPage = () => {
       'education': 'bg-yellow-100 text-yellow-800',
       'gaming': 'bg-indigo-100 text-indigo-800',
       'travel': 'bg-teal-100 text-teal-800',
-      'fashion': 'bg-rose-100 text-rose-800'
+      'fashion': 'bg-rose-100 text-rose-800',
+      'politics': 'bg-orange-100 text-orange-800',
+      'economy': 'bg-emerald-100 text-emerald-800',
+      'health': 'bg-lime-100 text-lime-800',
+      'science': 'bg-cyan-100 text-cyan-800',
+      'world': 'bg-violet-100 text-violet-800',
+      'culture': 'bg-fuchsia-100 text-fuchsia-800',
+      'military': 'bg-slate-100 text-slate-800',
+      'automotive': 'bg-sky-100 text-sky-800',
+      'realestate': 'bg-amber-100 text-amber-800',
+      'food': 'bg-orange-100 text-orange-800',
+      'video': 'bg-pink-100 text-pink-800',
+      'knowledge': 'bg-blue-100 text-blue-800',
+      'search': 'bg-gray-100 text-gray-800',
+      'lifestyle': 'bg-purple-100 text-purple-800'
     };
     
     // Specific source names
     if (sourceName) {
       const sourceColorMap = {
+        // 英文名称
+        'zhihu': 'bg-blue-100 text-blue-800',
+        'weibo': 'bg-red-100 text-red-800',
+        'baidu': 'bg-blue-100 text-blue-800',
+        'bilibili': 'bg-pink-100 text-pink-800',
+        'douyin': 'bg-black bg-opacity-10 text-gray-800',
+        'toutiao': 'bg-red-100 text-red-800',
+        '36kr': 'bg-green-100 text-green-800',
+        'cls': 'bg-green-100 text-green-800',
+        'wallstreetcn': 'bg-green-100 text-green-800',
+        'yicai': 'bg-green-100 text-green-800',
+        'eastmoney': 'bg-green-100 text-green-800',
+        'sina': 'bg-red-100 text-red-800',
+        'nbd': 'bg-green-100 text-green-800',
+        'thepaper': 'bg-blue-100 text-blue-800',
+        'zaobao': 'bg-green-100 text-green-800',
+        'ithome': 'bg-blue-100 text-blue-800',
+        'qq': 'bg-teal-100 text-teal-800',
+        '163': 'bg-red-100 text-red-800',
+        'sohu': 'bg-orange-100 text-orange-800',
+        'ifeng': 'bg-red-100 text-red-800',
+        'guancha': 'bg-blue-100 text-blue-800',
+        'cnstock': 'bg-green-100 text-green-800',
+        'jiemian': 'bg-green-100 text-green-800',
+        'bjnews': 'bg-gray-100 text-gray-800',
+        'hexun': 'bg-green-100 text-green-800',
+        
+        // 中文名称
         '知乎': 'bg-blue-100 text-blue-800',
         '微博': 'bg-red-100 text-red-800',
         '百度': 'bg-blue-100 text-blue-800',
         '哔哩哔哩': 'bg-pink-100 text-pink-800',
         '抖音': 'bg-black bg-opacity-10 text-gray-800',
-        '今日头条': 'bg-red-100 text-red-800'
+        '今日头条': 'bg-red-100 text-red-800',
+        '36氪': 'bg-green-100 text-green-800',
+        '澎湃新闻': 'bg-blue-100 text-blue-800',
+        '新浪': 'bg-red-100 text-red-800',
+        '腾讯': 'bg-teal-100 text-teal-800',
+        '网易': 'bg-red-100 text-red-800',
+        '搜狐': 'bg-orange-100 text-orange-800',
+        '凤凰网': 'bg-red-100 text-red-800',
+        '人民日报': 'bg-red-100 text-red-800',
+        'IT之家': 'bg-blue-100 text-blue-800',
+        '环球时报': 'bg-red-100 text-red-800',
+        '中国青年报': 'bg-red-100 text-red-800',
+        '观察者网': 'bg-blue-100 text-blue-800',
+        '第一财经': 'bg-green-100 text-green-800',
+        '财联社': 'bg-green-100 text-green-800',
+        '央视': 'bg-red-100 text-red-800',
+        '央视新闻': 'bg-red-100 text-red-800',
+        '新华社': 'bg-red-100 text-red-800',
+        '华尔街见闻': 'bg-green-100 text-green-800',
+        '东方财富': 'bg-green-100 text-green-800',
+        '新浪财经': 'bg-red-100 text-red-800',
+        '每日经济新闻': 'bg-green-100 text-green-800',
+        '联合早报': 'bg-green-100 text-green-800',
+        '中国证券网': 'bg-green-100 text-green-800',
+        '界面新闻': 'bg-green-100 text-green-800',
+        '新京报': 'bg-green-100 text-green-800',
+        '和讯网': 'bg-green-100 text-green-800'
       };
       
       if (sourceColorMap[sourceName]) {
@@ -502,6 +780,79 @@ const HotNewsPage = () => {
     if (score >= 30) return 'text-blue-500';
     return 'text-gray-500';
   };
+
+  // 组件加载时获取来源-分类映射
+  useEffect(() => {
+    const fetchSourceCategories = async () => {
+      try {
+        const response = await newsHeatApi.getSourceWeights();
+        // 从API响应中提取来源ID和分类信息
+        if (response && response.sources && Array.isArray(response.sources)) {
+          const categoryMap = {};
+          const nameMap = {}; // 创建来源ID到中文名称的映射
+          
+          response.sources.forEach(source => {
+            if (source.source_id && source.category) {
+              categoryMap[source.source_id] = source.category;
+            }
+            
+            // 添加来源ID到名称的映射
+            if (source.source_id && source.name) {
+              nameMap[source.source_id] = source.name;
+            }
+          });
+          
+          setSourceCategoryMap(categoryMap);
+          setSourceNameMap(nameMap); // 保存名称映射
+          console.log('从API获取的来源-分类映射:', categoryMap);
+          console.log('从API获取的来源-名称映射:', nameMap);
+        }
+      } catch (error) {
+        console.error('获取来源分类映射失败:', error);
+        // 设置默认映射作为回退
+        setSourceCategoryMap({
+          'weibo': 'social',
+          'zhihu': 'knowledge',
+          'toutiao': 'news',
+          'baidu': 'search',
+          'bilibili': 'video',
+          'douyin': 'video',
+          '36kr': 'technology'
+        });
+        
+        // 设置默认的名称映射
+        setSourceNameMap({
+          'weibo': '微博',
+          'zhihu': '知乎',
+          'toutiao': '今日头条',
+          'baidu': '百度',
+          'bilibili': '哔哩哔哩',
+          'douyin': '抖音',
+          '36kr': '36氪',
+          'cls': '财联社',
+          'wallstreetcn': '华尔街见闻',
+          'yicai': '第一财经',
+          'eastmoney': '东方财富',
+          'sina': '新浪财经',
+          'nbd': '每日经济新闻',
+          'thepaper': '澎湃新闻',
+          'zaobao': '联合早报',
+          'ithome': 'IT之家',
+          'qq': '腾讯新闻',
+          '163': '网易新闻',
+          'sohu': '搜狐新闻',
+          'ifeng': '凤凰网',
+          'guancha': '观察者网',
+          'cnstock': '中国证券网',
+          'jiemian': '界面新闻',
+          'bjnews': '新京报',
+          'hexun': '和讯网'
+        });
+      }
+    };
+    
+    fetchSourceCategories();
+  }, []);
 
   const renderFeedView = () => {
     if (loading) {
@@ -550,8 +901,9 @@ const HotNewsPage = () => {
             const itemKey = item.id || item.news_id || index;
             // 确保我们有标识符来获取热度信息
             const heatId = item.id || item.news_id;
-            // 确定源显示名称
-            const sourceName = item.source_name || item.source_id;
+            // 确定源显示名称 - 优先使用映射中的中文名称
+            const sourceId = item.source_id || '';
+            const sourceName = sourceNameMap[sourceId] || item.source_name || sourceId;
             
             return (
               <div key={itemKey} className="hover:bg-gray-50 transition-colors">
@@ -645,8 +997,9 @@ const HotNewsPage = () => {
           const itemKey = item.id || item.news_id || index;
           // 确保我们有标识符来获取热度信息
           const heatId = item.id || item.news_id;
-          // 确定源显示名称
-          const sourceName = item.source_name || item.source_id;
+          // 确定源显示名称 - 优先使用映射中的中文名称
+          const sourceId = item.source_id || '';
+          const sourceName = sourceNameMap[sourceId] || item.source_name || sourceId;
           
           return (
             <div key={itemKey} className="bg-white rounded-lg shadow-sm overflow-hidden hover:shadow-md transition-shadow">
@@ -720,6 +1073,40 @@ const HotNewsPage = () => {
     );
   };
 
+  // 在Toolbar部分使用新的渲染函数
+  const renderCategoryFilters = () => {
+    const categories = getCategories();
+    
+    return (
+      <div className="flex flex-wrap gap-2">
+        <button
+          className={`px-3 py-1.5 rounded-md text-sm flex items-center ${
+            selectedCategories.includes('all')
+              ? 'bg-blue-600 text-white font-medium'
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+          }`}
+          onClick={() => toggleCategory('all')}
+        >
+          全部
+        </button>
+        
+        {categories.map(category => (
+          <button
+            key={category}
+            className={`px-3 py-1.5 rounded-md text-sm whitespace-nowrap flex items-center ${
+              selectedCategories.includes(category)
+                ? 'bg-blue-600 text-white font-medium'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+            onClick={() => toggleCategory(category)}
+          >
+            {getCategoryName(category)}
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="container mx-auto px-4 py-8">
       {/* Page Header */}
@@ -771,30 +1158,7 @@ const HotNewsPage = () => {
                   <span className="font-medium">分类筛选:</span>
                 </div>
                 
-                <button
-                  className={`px-3 py-1.5 rounded-md text-sm flex items-center ${
-                    activeCategory === 'all'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                  onClick={() => setActiveCategory('all')}
-                >
-                  全部
-                </button>
-                
-                {getCategories().map(category => (
-                  <button
-                    key={category}
-                    className={`px-3 py-1.5 rounded-md text-sm whitespace-nowrap flex items-center ${
-                      activeCategory === category
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                    onClick={() => setActiveCategory(category)}
-                  >
-                    {getCategoryName(category)}
-                  </button>
-                ))}
+                {renderCategoryFilters()}
               </div>
               
               <div className="flex items-center gap-2">

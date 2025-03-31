@@ -2,9 +2,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Union, Any
 
 from loguru import logger
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.news_heat_score import NewsHeatScore
 from app.schemas.news_heat_score import HeatScoreCreate, HeatScoreUpdate
@@ -188,6 +189,7 @@ async def get_top_news_as_dict(
     skip: int = 0,
     min_score: Optional[float] = None,
     max_age_hours: Optional[int] = 72,
+    category: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """获取热门新闻列表作为字典列表"""
     try:
@@ -204,6 +206,30 @@ async def get_top_news_as_dict(
         
         if min_score is not None:
             stmt = stmt.where(NewsHeatScore.heat_score >= min_score)
+            
+        # 按分类筛选
+        if category is not None:
+            # 检查是否有多个分类（逗号分隔）
+            categories = [cat.strip() for cat in category.split(',') if cat.strip()]
+            
+            if len(categories) == 1:
+                # 单分类情况
+                stmt = stmt.where(
+                    NewsHeatScore.meta_data.isnot(None),
+                    NewsHeatScore.meta_data.cast(JSONB).op('->')('category').astext == categories[0]
+                )
+            elif len(categories) > 1:
+                # 多分类情况 - 使用OR条件
+                category_conditions = []
+                for cat in categories:
+                    category_conditions.append(
+                        NewsHeatScore.meta_data.cast(JSONB).op('->')('category').astext == cat
+                    )
+                
+                stmt = stmt.where(
+                    NewsHeatScore.meta_data.isnot(None),
+                    or_(*category_conditions)
+                )
         
         # 应用排序和分页
         stmt = stmt.order_by(desc(NewsHeatScore.heat_score))
@@ -220,6 +246,11 @@ async def get_top_news_as_dict(
         # 获取结果并转换为字典列表
         news_list = []
         for row in result.scalars().all():
+            # 提取分类信息
+            category = None
+            if row.meta_data and isinstance(row.meta_data, dict):
+                category = row.meta_data.get('category')
+            
             item_dict = {
                 "id": row.id,
                 "news_id": row.news_id,
@@ -232,6 +263,7 @@ async def get_top_news_as_dict(
                 "popularity_score": row.popularity_score,
                 "meta_data": row.meta_data,
                 "keywords": row.keywords,
+                "category": category,  # 将分类添加为顶级字段
                 "calculated_at": row.calculated_at.isoformat() if row.calculated_at else None,
                 "published_at": row.published_at.isoformat() if row.published_at else None,
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None

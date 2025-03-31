@@ -197,6 +197,17 @@ export const newsHeatApi = {
       console.error('触发热度更新失败:', error);
       throw new Error('触发热度更新失败');
     }
+  },
+  
+  // 获取来源权重和分类信息
+  getSourceWeights: async (params = {}) => {
+    try {
+      const response = await api.get(`${API_BASE_URL}/heat-score/source-weights`, { params });
+      return response;
+    } catch (error) {
+      console.error('获取来源权重信息失败:', error);
+      throw new Error('获取来源权重信息失败');
+    }
   }
 };
 

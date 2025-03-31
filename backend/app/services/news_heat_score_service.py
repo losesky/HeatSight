@@ -423,6 +423,43 @@ class NewsHeatScoreService:
             # 获取来源权重
             source_weight = await self._get_source_weight(news_item["source_id"], session)
             
+            # 提取或推断分类信息
+            category = news_item.get("category")
+            
+            # 如果新闻项中没有直接提供分类，尝试从其他字段获取
+            if not category and "meta_data" in news_item and isinstance(news_item["meta_data"], dict):
+                category = news_item["meta_data"].get("category")
+            
+            # 如果还没有分类，根据来源尝试推断
+            if not category:
+                # 根据source_id推断分类
+                source_categories = {
+                    "weibo": "social",
+                    "zhihu": "knowledge",
+                    "toutiao": "news",
+                    "baidu": "search",
+                    "bilibili": "video",
+                    "douyin": "video",
+                    "36kr": "technology",
+                    "wallstreetcn": "finance",
+                    "ithome": "technology",
+                    "thepaper": "news",
+                    "zaobao": "news",
+                    "sina": "news",
+                    "qq": "news",
+                    "163": "news",
+                    "sohu": "news",
+                    "ifeng": "news",
+                    "bbc_world": "world",
+                    "bloomberg": "finance",
+                    "hackernews": "technology",
+                    "github": "technology",
+                    "v2ex": "technology",
+                    "kuaishou": "video"
+                }
+                category = source_categories.get(news_item["source_id"], "others")
+                logger.debug(f"新闻[{news_item['id']}]没有分类信息，根据来源[{news_item['source_id']}]推断为: {category}")
+            
             # 综合计算最终热度
             final_score = (
                 (W_KEYWORD * keyword_score) +
@@ -448,7 +485,8 @@ class NewsHeatScoreService:
                 meta_data={
                     "cross_source_score": cross_source_score,
                     "source_weight": source_weight,
-                    "keywords": [k["word"] for k in keywords]  # 将关键词列表转换为字符串列表
+                    "keywords": [k["word"] for k in keywords[:5]],  # 将关键词列表转换为字符串列表
+                    "category": category  # 添加分类信息到meta_data
                 },
                 keywords=keywords,
                 published_at=published_time,
@@ -581,15 +619,16 @@ class NewsHeatScoreService:
         skip: int = 0, 
         min_score: Optional[float] = 50.0,
         max_age_hours: Optional[int] = 72,
+        category: Optional[str] = None,
         session: AsyncSession = None,
     ) -> List[Dict[str, Any]]:
         """获取热门新闻列表"""
         try:
-            logger.info(f"获取热门新闻列表: limit={limit}, skip={skip}, min_score={min_score}, max_age_hours={max_age_hours}")
+            logger.info(f"获取热门新闻列表: limit={limit}, skip={skip}, min_score={min_score}, max_age_hours={max_age_hours}, category={category}")
             
             # 使用新的字典返回方法，避免 ORM 模型和相关异步问题
             news_list = await news_heat_score.get_top_news_as_dict(
-                session, limit, skip, min_score, max_age_hours
+                session, limit, skip, min_score, max_age_hours, category
             )
             
             logger.info(f"成功获取热门新闻列表，共 {len(news_list)} 条记录")
