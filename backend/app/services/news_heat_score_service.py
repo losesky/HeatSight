@@ -644,8 +644,8 @@ class NewsHeatScoreService:
         """从所有源获取新闻"""
         logger.info(f"开始从{len(sources)}个源获取新闻")
         
-        # 限制并发请求数量
-        max_concurrent = 5
+        # 降低并发请求数量以减轻系统负担
+        max_concurrent = 3  # 从5降低到3
         all_news_items = []
         
         # 分批处理源，避免过多并发请求
@@ -665,8 +665,12 @@ class NewsHeatScoreService:
                     logger.warning(f"跳过没有ID的源: {source}")
                     continue
                 
+                # 设置任务超时以避免某些源长时间无响应导致整体阻塞
                 task = asyncio.create_task(
-                    self.heatlink_client.get(f"external/source/{source_id}")
+                    asyncio.wait_for(
+                        self.heatlink_client.get(f"external/source/{source_id}"),
+                        timeout=10  # 添加10秒超时
+                    )
                 )
                 tasks.append((source_id, task))
             
@@ -681,17 +685,17 @@ class NewsHeatScoreService:
                         # 1. 首先尝试从'news'键获取（当前API格式）
                         if isinstance(source_data, dict) and "news" in source_data:
                             news_items = source_data["news"]
-                            logger.debug(f"从源[{source_id}]的'news'键获取到 {len(news_items)} 条新闻")
+                            logger.info(f"源 {source_id} 获取到 {len(news_items)} 条新闻")
                         
                         # 2. 如果没有news键，尝试从'items'键获取（旧格式）
                         elif isinstance(source_data, dict) and "items" in source_data:
                             news_items = source_data["items"]
-                            logger.debug(f"从源[{source_id}]的'items'键获取到 {len(news_items)} 条新闻")
+                            logger.info(f"源 {source_id} 获取到 {len(news_items)} 条新闻")
                         
                         # 3. 如果API直接返回了列表
                         elif isinstance(source_data, list):
                             news_items = source_data
-                            logger.debug(f"源[{source_id}]直接返回列表，包含 {len(news_items)} 条新闻")
+                            logger.info(f"源 {source_id} 获取到 {len(news_items)} 条新闻")
                         
                         # 为每个新闻项添加source_id
                         for item in news_items:
@@ -701,8 +705,13 @@ class NewsHeatScoreService:
                         all_news_items.extend(news_items)
                     else:
                         logger.warning(f"从源[{source_id}]获取到空数据")
+                except asyncio.TimeoutError:
+                    logger.error(f"从源[{source_id}]获取新闻超时")
                 except Exception as e:
                     logger.error(f"从源[{source_id}]获取新闻失败: {e}")
+            
+            # 添加短暂暂停，让其他任务有机会执行
+            await asyncio.sleep(0.1)
         
         logger.info(f"共获取到 {len(all_news_items)} 条新闻")
         return all_news_items
@@ -712,9 +721,16 @@ class NewsHeatScoreService:
         logger.info("🔄 开始更新所有新闻热度分数")
         
         try:
-            # 1. 获取所有新闻源
-            sources_data = await self.heatlink_client.get_sources(force_update=True)
-            
+            # 1. 获取所有新闻源，设置超时防止阻塞
+            try:
+                sources_data = await asyncio.wait_for(
+                    self.heatlink_client.get_sources(force_update=True),
+                    timeout=15  # 15秒超时
+                )
+            except asyncio.TimeoutError:
+                logger.error("❌ 获取新闻源超时，任务终止")
+                return []
+                
             # 处理API返回值可能是列表或字典的情况
             if isinstance(sources_data, dict):
                 sources = sources_data.get("sources", [])
@@ -722,9 +738,21 @@ class NewsHeatScoreService:
                 # 如果API直接返回列表，就直接使用
                 sources = sources_data
             
+            # 检查是否有有效的源
+            if not sources:
+                logger.warning("⚠️ 未获取到有效的新闻源，任务终止")
+                return []
+                
+            logger.info(f"📊 成功获取 {len(sources)} 个新闻源")
+            
             # 2. 获取所有新闻
             all_news_items = await self.fetch_all_news_from_sources(sources)
             
+            # 如果没有获取到新闻，直接返回
+            if not all_news_items:
+                logger.warning("⚠️ 未获取到任何新闻，任务终止")
+                return []
+                
             # 3. 计算热度评分
             heat_scores = await self.calculate_batch_heat_scores(all_news_items, session)
             
@@ -732,7 +760,10 @@ class NewsHeatScoreService:
             return heat_scores
         except Exception as e:
             logger.error(f"❌ 更新热度分数失败: {e}")
-            raise
+            import traceback
+            logger.error(traceback.format_exc())
+            # 返回空列表而不是引发异常，避免中断调度器
+            return []
 
     async def update_keyword_heat(self, session: AsyncSession):
         """更新关键词热度"""

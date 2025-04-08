@@ -86,30 +86,42 @@ class TaskScheduler:
                     success = True
                     error_msg = None
                     
-                    # Create a database session for the task
-                    async with SessionLocal() as session:
-                        try:
-                            # Call the task function with session
-                            if task_info.get("with_session", True):
-                                await task_info["func"](session)
-                            else:
-                                await task_info["func"]()
-                                
-                            # 如果任务成功执行而没有显式提交事务，我们在这里提交
-                            if task_info.get("auto_commit", True) and task_info.get("with_session", True):
-                                if not session.is_active:
-                                    logger.debug(f"会话已关闭，跳过提交 [{task_id}]")
+                    # 创建一个任务保护，避免任务执行时间过长
+                    async def protected_task_execution():
+                        # Create a database session for the task
+                        async with SessionLocal() as session:
+                            try:
+                                # Call the task function with session
+                                if task_info.get("with_session", True):
+                                    await task_info["func"](session)
                                 else:
-                                    await session.commit()
+                                    await task_info["func"]()
                                     
-                        except Exception as e:
-                            success = False
-                            error_msg = str(e)
-                            # 在出现异常时回滚会话
-                            if task_info.get("with_session", True) and session.is_active:
-                                await session.rollback()
-                                logger.warning(f"❌ 任务执行出错，已回滚事务 [{task_id}]")
-                            raise
+                                # 如果任务成功执行而没有显式提交事务，我们在这里提交
+                                if task_info.get("auto_commit", True) and task_info.get("with_session", True):
+                                    if not session.is_active:
+                                        logger.debug(f"会话已关闭，跳过提交 [{task_id}]")
+                                    else:
+                                        await session.commit()
+                            except Exception as e:
+                                # 在出现异常时回滚会话
+                                if task_info.get("with_session", True) and session.is_active:
+                                    await session.rollback()
+                                    logger.warning(f"❌ 任务执行出错，已回滚事务 [{task_id}]")
+                                raise
+                                
+                    try:
+                        # 设置任务执行的最大时间，防止任务无限期执行
+                        max_execution_time = task_info.get("max_execution_time", 300)  # 默认5分钟
+                        await asyncio.wait_for(protected_task_execution(), timeout=max_execution_time)
+                    except asyncio.TimeoutError:
+                        success = False
+                        error_msg = f"任务执行超过最大允许时间 {max_execution_time} 秒"
+                        logger.error(f"⏱️ {error_msg} [{task_id}]")
+                    except Exception as e:
+                        success = False
+                        error_msg = str(e)
+                        raise
                     
                     # 任务完成后记录
                     duration = time.time() - start_time
@@ -146,7 +158,8 @@ class TaskScheduler:
         func: Callable[..., Awaitable[Any]], 
         interval: int, 
         with_session: bool = True,
-        auto_commit: bool = True
+        auto_commit: bool = True,
+        max_execution_time: Optional[int] = 300  # 添加参数，默认5分钟
     ):
         """Add a new task to the scheduler."""
         if task_id in self.tasks:
@@ -158,10 +171,11 @@ class TaskScheduler:
             "interval": interval,
             "with_session": with_session,
             "auto_commit": auto_commit,
+            "max_execution_time": max_execution_time,
             "task": None,
         }
         
-        logger.info(f"📝 任务已注册 [{task_id}] - 执行间隔: {interval}秒")
+        logger.info(f"📝 任务已注册 [{task_id}] - 执行间隔: {interval}秒, 最大执行时间: {max_execution_time}秒")
         
         # If scheduler is already running, start the task immediately
         if self.is_running:

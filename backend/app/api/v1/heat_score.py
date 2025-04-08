@@ -195,7 +195,14 @@ async def get_source_weights(
         
         # 从HeatLink API获取源信息
         try:
-            sources_data = await heat_score_service.heatlink_client.get_sources()
+            # 修改这里，使用external/sources端点而不是sources
+            sources_data = await heat_score_service.heatlink_client.get(
+                "external/sources", 
+                use_cache=True,
+                cache_key_prefix="sources",
+                force_refresh=False
+            )
+            
             # 处理API返回值可能是列表或字典的情况
             if isinstance(sources_data, dict):
                 sources_info = {s["source_id"]: s for s in sources_data.get("sources", [])}

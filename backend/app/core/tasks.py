@@ -68,7 +68,8 @@ def register_tasks():
         "update_heat_scores",
         heat_score_service.update_all_heat_scores,
         interval=600,
-        auto_commit=True
+        auto_commit=True,
+        max_execution_time=180  # 最多3分钟
     )
     
     # 更新关键词热度 - 每60分钟
@@ -76,7 +77,8 @@ def register_tasks():
         "update_keyword_heat",
         heat_score_service.update_keyword_heat,
         interval=3600,
-        auto_commit=True
+        auto_commit=True,
+        max_execution_time=120  # 最多2分钟
     )
     
     # 更新来源权重 - 每2小时
@@ -84,7 +86,8 @@ def register_tasks():
         "update_source_weights",
         heat_score_service.update_source_weights,
         interval=7200,
-        auto_commit=True
+        auto_commit=True,
+        max_execution_time=180  # 最多3分钟
     )
     
     logger.info("✨ 计划任务注册完成，共注册 3 个任务") 

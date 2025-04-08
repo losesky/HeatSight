@@ -177,7 +177,7 @@ async def get_sources(
             return cached_data
     
     try:
-        # Fetch sources from HeatLink API
+        # Fetch sources from HeatLink API - 使用更新后的方法
         sources_data = await heatlink_client.get_sources()
         
         # Cache the results (expires in 1 hour)

@@ -222,15 +222,41 @@ class HeatLinkAPIClient:
     
     # Source endpoints
     async def get_sources(self, use_cache: bool = True, force_update: bool = False) -> Dict[str, Any]:
-        """Get all available sources from HeatLink API."""
-        # 确保URL末尾带有斜杠以避免重定向
+        """Get available sources from HeatLink API."""
         return await self.get(
             "external/sources",
             use_cache=use_cache,
-            cache_key_prefix="sources",
-            force_refresh=force_update,
-            cache_ttl=self.cache_config["sources"]
+            force_refresh=force_update
         )
+
+    async def get_weighted_sources(self, use_cache: bool = True, force_update: bool = False) -> Dict[str, Any]:
+        """Get available sources with weight information from HeatLink API."""
+        # 获取基本源列表
+        sources_data = await self.get_sources(use_cache=use_cache, force_update=force_update)
+        
+        # 获取源权重信息
+        from app.services.news_heat_score_service import heat_score_service
+        source_weights = heat_score_service._get_source_weight(None, None)
+        
+        # 为每个源添加权重信息并排序
+        if isinstance(sources_data, dict) and "sources" in sources_data:
+            for source in sources_data["sources"]:
+                source_id = source.get("source_id") or source.get("id")
+                if source_id:
+                    source["weight"] = source_weights.get(source_id, source_weights["default"])
+            
+            # 按权重降序排序
+            sources_data["sources"].sort(key=lambda x: x.get("weight", 0), reverse=True)
+        elif isinstance(sources_data, list):
+            for source in sources_data:
+                source_id = source.get("source_id") or source.get("id")
+                if source_id:
+                    source["weight"] = source_weights.get(source_id, source_weights["default"])
+            
+            # 按权重降序排序
+            sources_data.sort(key=lambda x: x.get("weight", 0), reverse=True)
+        
+        return sources_data
     
     async def get_source(
         self, 

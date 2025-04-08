@@ -128,6 +128,7 @@ async def search_news(
 async def get_sources(
     use_cache: bool = Query(True, description="Use Redis cache if available"),
     force_update: bool = Query(False, description="Force fetching fresh data"),
+    weighted: bool = Query(False, description="Return sources with weight information"),
 ):
     """
     Get available sources from HeatLink API.
@@ -135,10 +136,16 @@ async def get_sources(
     Returns all available news sources with metadata.
     """
     try:
-        data = await heatlink_client.get_sources(
-            use_cache=use_cache,
-            force_update=force_update
-        )
+        if weighted:
+            data = await heatlink_client.get_weighted_sources(
+                use_cache=use_cache,
+                force_update=force_update
+            )
+        else:
+            data = await heatlink_client.get_sources(
+                use_cache=use_cache,
+                force_update=force_update
+            )
         return data
     except Exception as e:
         logger.error(f"Error fetching sources: {e}")
