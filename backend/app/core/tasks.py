@@ -69,7 +69,7 @@ def register_tasks():
         heat_score_service.update_all_heat_scores,
         interval=600,
         auto_commit=True,
-        max_execution_time=180  # 最多3分钟
+        max_execution_time=600  # 最多10分钟
     )
     
     # 更新关键词热度 - 每60分钟
